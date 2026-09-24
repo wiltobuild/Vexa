@@ -1,7 +1,7 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';import {WebSocket} from 'ws';
 const api=process.env.API_URL??'http://localhost:3001';const origin=process.env.WEB_ORIGIN??'http://localhost:5173';
 test('authenticated text flow, denied access, gateway delivery and replay',{skip:process.env.VEXA_INTEGRATION!=='1',timeout:30000},async()=>{
- async function register(){const r=await fetch(api+'/auth/register',{method:'POST',headers:{'Content-Type':'application/json',Origin:origin},body:JSON.stringify({email:`test-${randomUUID()}@example.com`,username:'Integration tester',password:'long-test-password-123!'})});assert.equal(r.status,201);return r.headers.get('set-cookie')!.split(';')[0];}
+ async function register(){const r=await fetch(api+'/auth/register',{method:'POST',headers:{'Content-Type':'application/json',Origin:origin},body:JSON.stringify({email:`test-${randomUUID()}@example.com`,username:`it-${randomUUID().slice(0,8)}`,password:'long-test-password-123!'})});assert.equal(r.status,201);return r.headers.get('set-cookie')!.split(';')[0];}
  const cookie=await register(),stranger=await register();
  async function request(path:string,method='GET',body?:unknown,session=cookie){return fetch(api+path,{method,headers:{Cookie:session,Origin:origin,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});}
  const guildResponse=await request('/guilds','POST',{name:'Integration guild'});assert.equal(guildResponse.status,201);const guild=await guildResponse.json() as {id:string;channelId:string};const path=`/channels/${guild.channelId}/messages`;
@@ -33,7 +33,7 @@ test('authenticated text flow, denied access, gateway delivery and replay',{skip
 });
 
 test('roles cannot grant permissions the actor lacks, and moderation enforces them',{skip:process.env.VEXA_INTEGRATION!=='1',timeout:30000},async()=>{
- async function register(){const r=await fetch(api+'/auth/register',{method:'POST',headers:{'Content-Type':'application/json',Origin:origin},body:JSON.stringify({email:`test-${randomUUID()}@example.com`,username:'Integration tester',password:'long-test-password-123!'})});assert.equal(r.status,201);const user=await r.json() as {id:string};return {cookie:r.headers.get('set-cookie')!.split(';')[0],id:user.id};}
+ async function register(){const r=await fetch(api+'/auth/register',{method:'POST',headers:{'Content-Type':'application/json',Origin:origin},body:JSON.stringify({email:`test-${randomUUID()}@example.com`,username:`it-${randomUUID().slice(0,8)}`,password:'long-test-password-123!'})});assert.equal(r.status,201);const user=await r.json() as {id:string};return {cookie:r.headers.get('set-cookie')!.split(';')[0],id:user.id};}
  async function request(path:string,method='GET',body?:unknown,session?:string){return fetch(api+path,{method,headers:{...(session?{Cookie:session}:{}),Origin:origin,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});}
  const owner=await register(),member=await register(),victim=await register();
  const guild=await (await request('/guilds','POST',{name:'Mod guild'},owner.cookie)).json() as {id:string};
