@@ -1,0 +1,55 @@
+name: Vexa checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: vexa
+          POSTGRES_PASSWORD: vexa_local_only
+          POSTGRES_DB: vexa
+        ports: ['5432:5432']
+        options: --health-cmd 'pg_isready -U vexa -d vexa' --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd 'redis-cli ping' --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm --filter @vexa/web exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - name: Start backend services
+        run: |
+          cp .env.example .env
+          pnpm db:migrate
+          pnpm --filter @vexa/api start > /tmp/vexa-api.log 2>&1 &
+          pnpm --filter @vexa/gateway start > /tmp/vexa-gateway.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3001/health; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/vexa-api.log /tmp/vexa-gateway.log
+          exit 1
+      - name: API and gateway integration
+        run: pnpm --filter @vexa/gateway test
+        env:
+          VEXA_INTEGRATION: '1'
+          WEB_ORIGIN: http://127.0.0.1:5173
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-results
+          path: apps/web/test-results

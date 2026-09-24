@@ -1,0 +1,18 @@
+{
+  "name": "vexa",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "pnpm --filter @vexa/web dev",
+    "dev:all": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "db:migrate": "pnpm --filter @vexa/api db:migrate",
+    "test:e2e": "pnpm --filter @vexa/web test:e2e"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
