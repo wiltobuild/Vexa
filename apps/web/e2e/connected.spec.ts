@@ -15,7 +15,8 @@ async function connect(page: Page) {
 }
 
 async function registerAccount(page: Page, username: string) {
- await expect(page.getByRole('status')).toHaveText('Checking your session…');
+ // The "Checking your session…" status is transient (the /me probe often resolves before we'd
+ // ever observe it) — wait for the sign-in form itself instead of that fleeting status text.
  await page.getByRole('button', { name: 'New here? Create an account', exact: true }).click();
  await page.getByLabel('USERNAME').fill(username);
  await page.getByLabel('EMAIL').fill(`${username}@example.com`);
