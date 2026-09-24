@@ -18,9 +18,21 @@ export async function requireGuild(userId:string,guildId:string,permission:bigin
  if(!result.owner&&!hasPermission(result.bits,permission))throw forbid('Missing permission for this action');
  return result;
 }
+// DM channels have no guild_id, so they never match the guild-scoped query below (which INNER
+// JOINs guilds/guild_members). They get a separate, simpler check: any dm_members row for this
+// user is full access (view + send), no roles/overwrites/timeouts — there's no guild to own them.
+// A block in either direction closes the whole channel, not just sending: a blocked relationship
+// shouldn't leave an old DM readable/writable by either side just because it predates the block.
+async function dmPermissions(userId:string,channelId:string){
+ const {rows:[channel]}=await db.query("SELECT c.* FROM channels c JOIN dm_members d ON d.channel_id=c.id AND d.user_id=$1 WHERE c.id=$2 AND c.type IN ('dm','group_dm')",[userId,channelId]);
+ if(!channel)return {bits:0n,channel:null};
+ const {rowCount:blocked}=await db.query("SELECT 1 FROM dm_members other JOIN relationships r ON (r.user_id=$1 AND r.target_id=other.user_id AND r.kind='blocked') OR (r.user_id=other.user_id AND r.target_id=$1 AND r.kind='blocked') WHERE other.channel_id=$2 AND other.user_id<>$1",[userId,channelId]);
+ if(blocked)return {bits:0n,channel:null};
+ return {bits:Permission.VIEW_CHANNEL|Permission.SEND_MESSAGES,channel};
+}
 export async function channelPermissions(userId:string,channelId:string){
  const {rows:[channel]}=await db.query('SELECT c.*,g.owner_id,m.timeout_until FROM channels c JOIN guilds g ON g.id=c.guild_id JOIN guild_members m ON m.guild_id=g.id AND m.user_id=$1 WHERE c.id=$2',[userId,channelId]);
- if(!channel)return {bits:0n,channel:null};
+ if(!channel)return dmPermissions(userId,channelId);
  const {rows:roles}=await db.query('SELECT r.* FROM roles r WHERE r.guild_id=$1 AND (r.id=$1 OR r.id IN (SELECT role_id FROM member_roles WHERE guild_id=$1 AND user_id=$2))',[channel.guild_id,userId]);
  const {rows:overwrites}=await db.query('SELECT * FROM permission_overwrites WHERE channel_id=$1',[channelId]);
  let bits=permissionsFor({owner:channel.owner_id===userId,userId,everyoneId:channel.guild_id,everyone:BigInt(roles.find(r=>r.id===channel.guild_id)?.permissions??0),roles:roles.filter(r=>r.id!==channel.guild_id).map(r=>({id:r.id,permissions:BigInt(r.permissions)})),overwrites:overwrites.map(o=>({targetId:o.target_id,targetType:o.target_type,allow:BigInt(o.allow_bits),deny:BigInt(o.deny_bits)}))});

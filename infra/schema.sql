@@ -1,4 +1,8 @@
 CREATE TABLE IF NOT EXISTS users (id bigint PRIMARY KEY,email text UNIQUE NOT NULL,username text NOT NULL,password_hash text NOT NULL,avatar_url text,bio text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now());
+-- Case-insensitive uniqueness: friend requests and DMs look users up by username, so two accounts
+-- with the same (or differently-cased) handle would be ambiguous. Dev-only data, so this is safe
+-- to add now; it would need a rename/cleanup migration first against real duplicate usernames.
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(lower(username));
 CREATE TABLE IF NOT EXISTS sessions (token_hash text PRIMARY KEY,user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires_at timestamptz NOT NULL);
 CREATE TABLE IF NOT EXISTS guilds (id bigint PRIMARY KEY,name text NOT NULL,owner_id bigint NOT NULL REFERENCES users(id),features jsonb NOT NULL DEFAULT '{"transcription":false}');
 CREATE TABLE IF NOT EXISTS guild_members (guild_id bigint REFERENCES guilds(id) ON DELETE CASCADE,user_id bigint REFERENCES users(id) ON DELETE CASCADE,nickname text,joined_at timestamptz NOT NULL DEFAULT now(),timeout_until timestamptz,PRIMARY KEY(guild_id,user_id));

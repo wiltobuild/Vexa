@@ -75,4 +75,50 @@ test.describe('connected workspace (real backend)', () => {
    await guestContext.close();
   }
  });
+
+ test('a friend request, once accepted, opens a DM with live delivery', async ({ page, browser }) => {
+  test.skip(!live, 'set VEXA_INTEGRATION=1 with the API/gateway/Postgres/Redis stack running');
+  const alice = `e2e-alice-${unique()}`, bob = `e2e-bob-${unique()}`;
+  await connect(page);
+  await registerAccount(page, alice);
+
+  const bobContext = await browser.newContext();
+  const bobPage = await bobContext.newPage();
+  try {
+   await connect(bobPage);
+   await registerAccount(bobPage, bob);
+
+   await page.getByRole('button', { name: 'Friends and direct messages', exact: true }).click();
+   await page.getByPlaceholder('Add a friend by username').fill(bob);
+   await page.getByRole('button', { name: 'Send', exact: true }).click();
+   await expect(page.getByText('Request sent', { exact: true })).toBeVisible();
+
+   await bobPage.getByRole('button', { name: 'Friends and direct messages', exact: true }).click();
+   await expect(bobPage.getByText('Wants to be friends', { exact: true })).toBeVisible();
+   await bobPage.getByRole('button', { name: `Accept ${alice}'s request`, exact: true }).click();
+   await expect(bobPage.getByText('Friend', { exact: true })).toBeVisible();
+
+   // Friend/DM state isn't pushed over the gateway (only messages are) — reload to refetch it.
+   await page.reload();
+   await connect(page);
+   await page.getByRole('button', { name: 'Friends and direct messages', exact: true }).click();
+   await expect(page.getByText(bob, { exact: true })).toBeVisible();
+   await page.getByRole('button', { name: `Message ${bob}`, exact: true }).click();
+   await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Hi from Playwright DM');
+   await page.getByRole('button', { name: 'Send message', exact: true }).click();
+   await expect(page.getByText('Hi from Playwright DM', { exact: true })).toBeVisible();
+
+   await bobPage.reload();
+   await connect(bobPage);
+   await bobPage.getByRole('button', { name: 'Friends and direct messages', exact: true }).click();
+   await bobPage.getByRole('button', { name: alice, exact: true }).click();
+   await expect(bobPage.getByText('Hi from Playwright DM', { exact: true })).toBeVisible();
+
+   await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Second DM message, live');
+   await page.getByRole('button', { name: 'Send message', exact: true }).click();
+   await expect(bobPage.getByText('Second DM message, live', { exact: true })).toBeVisible({ timeout: 10000 });
+  } finally {
+   await bobContext.close();
+  }
+ });
 });

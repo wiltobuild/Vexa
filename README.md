@@ -13,7 +13,7 @@ Two intentionally separate modes:
 
 The shared package includes Zod contracts, 64-bit Snowflake IDs, permission bitfields, and tested overwrite precedence. Every channel API access and gateway dispatch checks server-side permissions. React uses TanStack Query for connected data and Zustand for the isolated local demo. The demo message list uses TanStack Virtual; connected history is paginated and still needs virtualization for long sessions.
 
-**This is a first implementation pass, not a finished Discord replacement.** Real voice/video/screen share, transcription workers, full social/moderation APIs, production uploads/embeds, comprehensive denial coverage, observability and measured scale remain open. No audio is captured by the voice preview. No performance numbers are claimed.
+**This is a first implementation pass, not a finished Discord replacement.** Real voice/video/screen share, transcription workers, group DMs, production uploads/embeds, comprehensive denial coverage, observability and measured scale remain open. Roles, invites, moderation (kick/ban/timeout) and friends/1:1 DMs are implemented. No audio is captured by the voice preview. No performance numbers are claimed.
 
 ## Quick start: interface
 

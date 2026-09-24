@@ -32,6 +32,8 @@ export const roleCreateSchema=z.object({name:z.string().trim().min(1).max(100),p
 export const roleUpdateSchema=z.object({name:z.string().trim().min(1).max(100).optional(),permissions:permissionBitsSchema.optional()});
 export const banSchema=z.object({userId:snowflakeSchema,reason:z.string().trim().max(300).optional()});
 export const timeoutSchema=z.object({minutes:z.number().int().min(0).max(10080)});
+export const friendRequestSchema=z.object({username:z.string().trim().min(2).max(32)});
+export const dmCreateSchema=z.object({userId:snowflakeSchema});
 export const GatewayOpcode={HELLO:0,IDENTIFY:1,HEARTBEAT:2,DISPATCH:3,RESUME:4,HEARTBEAT_ACK:5,INVALID_SESSION:6,SUBSCRIBE:7} as const;
 export const gatewayInputSchema=z.discriminatedUnion('op',[
  z.object({op:z.literal(1),d:z.object({channels:z.array(snowflakeSchema).max(100).default([])})}),

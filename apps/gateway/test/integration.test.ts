@@ -77,3 +77,41 @@ test('roles cannot grant permissions the actor lacks, and moderation enforces th
  assert.ok(auditLog.some(e=>e.action==='member.timeout'));
 });
 
+test('friend requests, DMs, and blocking close an existing DM both ways',{skip:process.env.VEXA_INTEGRATION!=='1',timeout:30000},async()=>{
+ async function register(){const username=`e2e-${randomUUID().slice(0,8)}`;const r=await fetch(api+'/auth/register',{method:'POST',headers:{'Content-Type':'application/json',Origin:origin},body:JSON.stringify({email:`${username}@example.com`,username,password:'long-test-password-123!'})});assert.equal(r.status,201);const user=await r.json() as {id:string};return {cookie:r.headers.get('set-cookie')!.split(';')[0],id:user.id,username};}
+ async function request(path:string,method='GET',body?:unknown,session?:string){return fetch(api+path,{method,headers:{...(session?{Cookie:session}:{}),Origin:origin,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});}
+ const alice=await register(),bob=await register(),carol=await register(),dave=await register();
+
+ // Sending a request, seeing it from both sides, and accepting it.
+ const sent=await request('/relationships/requests','POST',{username:bob.username},alice.cookie);assert.equal(sent.status,201);assert.deepEqual(await sent.json(),{status:'pending',id:bob.id});
+ assert.deepEqual((await (await request('/relationships','GET',undefined,alice.cookie)).json() as {outgoing:{id:string}[]}).outgoing.map(u=>u.id),[bob.id]);
+ assert.deepEqual((await (await request('/relationships','GET',undefined,bob.cookie)).json() as {incoming:{id:string}[]}).incoming.map(u=>u.id),[alice.id]);
+ assert.equal((await request(`/relationships/${alice.id}/accept`,'POST',undefined,bob.cookie)).status,200);
+ for(const [self,other] of [[alice,bob],[bob,alice]] as const)assert.deepEqual((await (await request('/relationships','GET',undefined,self.cookie)).json() as {friends:{id:string}[]}).friends.map(u=>u.id),[other.id]);
+
+ // A DM channel is created once and reused; only the two participants can read or send in it.
+ const created=await request('/dms','POST',{userId:bob.id},alice.cookie);assert.equal(created.status,201);const dm=await created.json() as {id:string};
+ assert.deepEqual(await (await request('/dms','POST',{userId:alice.id},bob.cookie)).json(),{id:dm.id});
+ const nonce=randomUUID();assert.equal((await request(`/channels/${dm.id}/messages`,'POST',{content:'hey',nonce},alice.cookie)).status,201);
+ const bobSees=await (await request(`/channels/${dm.id}/messages`,'GET',undefined,bob.cookie)).json() as {content:string}[];assert.equal(bobSees[0].content,'hey');
+ assert.equal((await request(`/channels/${dm.id}/messages`,'GET',undefined,carol.cookie)).status,403);
+
+ // Blocking closes the DM for both sides immediately, not just for new requests; unblocking reopens it.
+ assert.equal((await request(`/relationships/${bob.id}/block`,'POST',undefined,alice.cookie)).status,204);
+ assert.deepEqual((await (await request('/relationships','GET',undefined,bob.cookie)).json() as {friends:unknown[]}).friends,[]);
+ assert.equal((await request(`/channels/${dm.id}/messages`,'GET',undefined,alice.cookie)).status,403);
+ assert.equal((await request(`/channels/${dm.id}/messages`,'GET',undefined,bob.cookie)).status,403);
+ assert.equal((await request('/relationships/requests','POST',{username:bob.username},alice.cookie)).status,403);
+ assert.equal((await request('/relationships/requests','POST',{username:alice.username},bob.cookie)).status,403);
+ assert.equal((await request(`/relationships/${bob.id}/block`,'DELETE',undefined,alice.cookie)).status,204);
+ assert.equal((await request(`/channels/${dm.id}/messages`,'GET',undefined,bob.cookie)).status,200);
+
+ // Declining an incoming request clears it (not a block); a later mutual request from the other
+ // side then completes as an immediate friendship instead of leaving two rows pointing past each other.
+ assert.equal((await request('/relationships/requests','POST',{username:dave.username},carol.cookie)).status,201);
+ assert.equal((await request(`/relationships/${carol.id}`,'DELETE',undefined,dave.cookie)).status,204);
+ assert.deepEqual((await (await request('/relationships','GET',undefined,carol.cookie)).json() as {outgoing:unknown[]}).outgoing,[]);
+ assert.equal((await request('/relationships/requests','POST',{username:dave.username},carol.cookie)).status,201);
+ const merged=await request('/relationships/requests','POST',{username:carol.username},dave.cookie);assert.equal(merged.status,200);assert.deepEqual(await merged.json(),{status:'friend',id:carol.id});
+});
+

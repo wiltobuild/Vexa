@@ -1,5 +1,5 @@
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import cors from '@fastify/cors';import rateLimit from '@fastify/rate-limit';import argon2 from 'argon2';import {randomBytes,createHash} from 'node:crypto';import {z,ZodError} from 'zod';
-import {Snowflake,registerSchema,credentialsSchema,guildSchema,channelSchema,messageSchema,editMessageSchema,snowflakeSchema,DEFAULT_PERMISSIONS,Permission,hasPermission,roleCreateSchema,roleUpdateSchema,banSchema,timeoutSchema} from '@vexa/shared';import {db,redis,requireChannel,requireGuild,publish} from './db.js';
+import {Snowflake,registerSchema,credentialsSchema,guildSchema,channelSchema,messageSchema,editMessageSchema,snowflakeSchema,DEFAULT_PERMISSIONS,Permission,hasPermission,roleCreateSchema,roleUpdateSchema,banSchema,timeoutSchema,friendRequestSchema,dmCreateSchema} from '@vexa/shared';import {db,redis,requireChannel,requireGuild,publish} from './db.js';
 declare module 'fastify' {interface FastifyRequest {userId:string}}
 // trustProxy: behind a reverse proxy/CDN (Vercel, Fly, Render, nginx), req.ip is otherwise the
 // proxy's own IP for every request, collapsing the per-IP rate limiter into one shared bucket
@@ -25,6 +25,92 @@ app.post('/auth/register',{config:{rateLimit:{max:Number(process.env.AUTH_REGIST
 app.post('/auth/login',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{const body=credentialsSchema.parse(req.body);const {rows:[user]}=await db.query('SELECT * FROM users WHERE email=$1',[body.email]);if(!user||!await argon2.verify(user.password_hash,body.password))return reply.code(401).send({error:'Invalid credentials'});await createSession(user.id,reply);return {id:user.id,username:user.username,email:user.email};});
 app.post('/auth/logout',async(req,reply)=>{if(req.cookies.vexa_session)await db.query('DELETE FROM sessions WHERE token_hash=$1',[hash(req.cookies.vexa_session)]);reply.clearCookie('vexa_session',{path:'/'});return {ok:true};});
 app.get('/me',async(req)=>{const {rows:[user]}=await db.query('SELECT id,username,email,avatar_url,bio FROM users WHERE id=$1',[req.userId]);return user;});
+// Relationships are stored as directed rows (user_id -> target_id). A 'pending' row is that
+// user's own outgoing request; the other side's incoming request is the same row seen from
+// target_id's perspective, so it is never duplicated — only ever queried from the other angle.
+app.get('/relationships',async(req)=>{
+ const uid=req.userId;
+ const [friends,outgoing,incoming,blocked]=await Promise.all([
+  db.query("SELECT u.id,u.username,u.avatar_url FROM relationships r JOIN users u ON u.id=r.target_id WHERE r.user_id=$1 AND r.kind='friend' ORDER BY u.username",[uid]),
+  db.query("SELECT u.id,u.username,u.avatar_url FROM relationships r JOIN users u ON u.id=r.target_id WHERE r.user_id=$1 AND r.kind='pending' ORDER BY u.username",[uid]),
+  db.query("SELECT u.id,u.username,u.avatar_url FROM relationships r JOIN users u ON u.id=r.user_id WHERE r.target_id=$1 AND r.kind='pending' AND NOT EXISTS(SELECT 1 FROM relationships r2 WHERE r2.user_id=$1 AND r2.target_id=r.user_id) ORDER BY u.username",[uid]),
+  db.query("SELECT u.id,u.username,u.avatar_url FROM relationships r JOIN users u ON u.id=r.target_id WHERE r.user_id=$1 AND r.kind='blocked' ORDER BY u.username",[uid]),
+ ]);
+ return {friends:friends.rows,outgoing:outgoing.rows,incoming:incoming.rows,blocked:blocked.rows};
+});
+app.post('/relationships/requests',{config:{rateLimit:{max:20,timeWindow:'1 minute'}}},async(req,reply)=>{
+ const body=friendRequestSchema.parse(req.body);
+ const {rows:[target]}=await db.query('SELECT id FROM users WHERE lower(username)=lower($1)',[body.username]);
+ if(!target)return reply.code(404).send({error:'No user with that username'});
+ if(target.id===req.userId)return reply.code(400).send({error:'You cannot friend yourself'});
+ if((await db.query("SELECT 1 FROM relationships WHERE user_id=$1 AND target_id=$2 AND kind='blocked'",[req.userId,target.id])).rowCount)return reply.code(403).send({error:'Unblock this user first'});
+ if((await db.query("SELECT 1 FROM relationships WHERE user_id=$1 AND target_id=$2 AND kind='blocked'",[target.id,req.userId])).rowCount)return reply.code(403).send({error:'Cannot send a friend request to this user'});
+ const client=await db.connect();
+ try{
+  await client.query('BEGIN');
+  // If they already sent us a pending request, accepting it beats leaving two rows pointing
+  // past each other — this call just completes the friendship instead of adding a duplicate.
+  const {rowCount:theirs}=await client.query("SELECT 1 FROM relationships WHERE user_id=$1 AND target_id=$2 AND kind='pending' FOR UPDATE",[target.id,req.userId]);
+  if(theirs){
+   await client.query("UPDATE relationships SET kind='friend' WHERE user_id=$1 AND target_id=$2",[target.id,req.userId]);
+   await client.query("INSERT INTO relationships(user_id,target_id,kind) VALUES($1,$2,'friend') ON CONFLICT(user_id,target_id) DO UPDATE SET kind='friend'",[req.userId,target.id]);
+   await client.query('COMMIT');
+   return {status:'friend',id:target.id};
+  }
+  await client.query("INSERT INTO relationships(user_id,target_id,kind) VALUES($1,$2,'pending') ON CONFLICT(user_id,target_id) DO UPDATE SET kind='pending'",[req.userId,target.id]);
+  await client.query('COMMIT');
+  return reply.code(201).send({status:'pending',id:target.id});
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+});
+app.post('/relationships/:userId/accept',async(req,reply)=>{
+ const targetId=params(req.params,'userId');
+ const {rowCount}=await db.query("UPDATE relationships SET kind='friend' WHERE user_id=$1 AND target_id=$2 AND kind='pending'",[targetId,req.userId]);
+ if(!rowCount)return reply.code(404).send({error:'No pending request from this user'});
+ await db.query("INSERT INTO relationships(user_id,target_id,kind) VALUES($1,$2,'friend') ON CONFLICT(user_id,target_id) DO UPDATE SET kind='friend'",[req.userId,targetId]);
+ return {ok:true};
+});
+// Declines an incoming request, cancels an outgoing one, or unfriends — whichever applies. Never
+// touches a block; that has its own endpoint below so a block can't be undone by mistake here.
+app.delete('/relationships/:userId',async(req,reply)=>{
+ const targetId=params(req.params,'userId');
+ await db.query("DELETE FROM relationships WHERE ((user_id=$1 AND target_id=$2) OR (user_id=$2 AND target_id=$1)) AND kind<>'blocked'",[req.userId,targetId]);
+ return reply.code(204).send();
+});
+app.post('/relationships/:userId/block',async(req,reply)=>{
+ const targetId=params(req.params,'userId');
+ if(targetId===req.userId)return reply.code(400).send({error:'You cannot block yourself'});
+ const client=await db.connect();
+ try{
+  await client.query('BEGIN');
+  await client.query('DELETE FROM relationships WHERE user_id=$1 AND target_id=$2',[targetId,req.userId]);
+  await client.query("INSERT INTO relationships(user_id,target_id,kind) VALUES($1,$2,'blocked') ON CONFLICT(user_id,target_id) DO UPDATE SET kind='blocked'",[req.userId,targetId]);
+  await client.query('COMMIT');
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+ return reply.code(204).send();
+});
+app.delete('/relationships/:userId/block',async(req,reply)=>{
+ const targetId=params(req.params,'userId');
+ const {rowCount}=await db.query("DELETE FROM relationships WHERE user_id=$1 AND target_id=$2 AND kind='blocked'",[req.userId,targetId]);
+ if(!rowCount)return reply.code(404).send({error:'Not blocked'});
+ return reply.code(204).send();
+});
+app.get('/dms',async(req)=>(await db.query("SELECT c.id,u.id AS user_id,u.username,u.avatar_url FROM channels c JOIN dm_members d ON d.channel_id=c.id AND d.user_id=$1 JOIN dm_members d2 ON d2.channel_id=c.id AND d2.user_id<>$1 JOIN users u ON u.id=d2.user_id WHERE c.type='dm' ORDER BY c.id DESC",[req.userId])).rows);
+app.post('/dms',{config:{rateLimit:{max:20,timeWindow:'1 minute'}}},async(req,reply)=>{
+ const body=dmCreateSchema.parse(req.body);
+ if(body.userId===req.userId)return reply.code(400).send({error:'You cannot open a DM with yourself'});
+ if(!(await db.query('SELECT 1 FROM users WHERE id=$1',[body.userId])).rowCount)return reply.code(404).send({error:'User not found'});
+ if((await db.query("SELECT 1 FROM relationships WHERE ((user_id=$1 AND target_id=$2) OR (user_id=$2 AND target_id=$1)) AND kind='blocked'",[req.userId,body.userId])).rowCount)return reply.code(403).send({error:'Cannot message this user'});
+ const {rows:[existing]}=await db.query("SELECT c.id FROM channels c WHERE c.type='dm' AND EXISTS(SELECT 1 FROM dm_members WHERE channel_id=c.id AND user_id=$1) AND EXISTS(SELECT 1 FROM dm_members WHERE channel_id=c.id AND user_id=$2) AND (SELECT COUNT(*) FROM dm_members WHERE channel_id=c.id)=2",[req.userId,body.userId]);
+ if(existing)return {id:existing.id};
+ const id=ids.next(),client=await db.connect();
+ try{
+  await client.query('BEGIN');
+  await client.query("INSERT INTO channels(id,name,type) VALUES($1,'','dm')",[id]);
+  await client.query('INSERT INTO dm_members(channel_id,user_id) VALUES($1,$2),($1,$3)',[id,req.userId,body.userId]);
+  await client.query('COMMIT');
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+ return reply.code(201).send({id});
+});
 app.get('/guilds',async(req)=>(await db.query('SELECT g.* FROM guilds g JOIN guild_members m ON m.guild_id=g.id WHERE m.user_id=$1 ORDER BY g.id',[req.userId])).rows);
 const inviteCodeSchema=z.string().regex(/^[A-Za-z0-9_-]{24}$/);
 app.post('/guilds/:guildId/invites',{config:{rateLimit:{max:15,timeWindow:'1 minute'}}},async(req,reply)=>{
@@ -65,7 +151,7 @@ app.put('/guilds/:guildId/members/:userId/timeout',async(req,reply)=>{const id=p
 app.get('/guilds/:guildId/audit-log',async(req)=>{const id=params(req.params,'guildId');await requireGuild(req.userId,id,Permission.MANAGE_GUILD);return (await db.query('SELECT a.id,a.action,a.target_id,a.details,a.created_at,u.username AS actor_username FROM audit_log a JOIN users u ON u.id=a.actor_id WHERE a.guild_id=$1 ORDER BY a.id DESC LIMIT 50',[id])).rows;});
 app.post('/guilds/:guildId/channels',async(req,reply)=>{const guildId=params(req.params,'guildId'),body=channelSchema.parse(req.body);const {rows:[guild]}=await db.query('SELECT * FROM guilds WHERE id=$1 AND owner_id=$2',[guildId,req.userId]);if(!guild)return reply.code(403).send({error:'Only the guild owner can create channels in this release'});if(body.parentId){const {rows:[parent]}=await db.query("SELECT id FROM channels WHERE id=$1 AND guild_id=$2 AND type='category'",[body.parentId,guildId]);if(!parent)return reply.code(400).send({error:'Invalid category'});}const id=ids.next();const {rows:[channel]}=await db.query('INSERT INTO channels(id,guild_id,name,type,parent_id) VALUES($1,$2,$3,$4,$5) RETURNING *',[id,guildId,body.name,body.type,body.parentId??null]);return reply.code(201).send(channel);});
 app.get('/channels/:channelId/messages',async(req)=>{const id=params(req.params,'channelId');await requireChannel(req.userId,id);const query=z.object({before:snowflakeSchema.optional(),limit:z.coerce.number().int().min(1).max(100).default(50)}).parse(req.query);return (await db.query('SELECT m.*,u.username FROM messages m JOIN users u ON u.id=m.author_id WHERE m.channel_id=$1 AND ($2::bigint IS NULL OR m.id<$2) ORDER BY m.id DESC LIMIT $3',[id,query.before??null,query.limit])).rows;});
-app.post('/channels/:channelId/messages',async(req,reply)=>{const id=params(req.params,'channelId'),body=messageSchema.parse(req.body);const {channel}=await requireChannel(req.userId,id,Permission.SEND_MESSAGES);if(channel.type!=='text')return reply.code(400).send({error:'Messages require a text channel'});if(body.replyTo){const {rowCount}=await db.query('SELECT 1 FROM messages WHERE id=$1 AND channel_id=$2',[body.replyTo,id]);if(!rowCount)return reply.code(400).send({error:'Reply must refer to this channel'});}const {rows:[message]}=await db.query('INSERT INTO messages(id,channel_id,author_id,content,nonce,reply_to) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(author_id,nonce) DO NOTHING RETURNING *',[ids.next(),id,req.userId,body.content,body.nonce,body.replyTo??null]);if(!message){const {rows:[existing]}=await db.query('SELECT * FROM messages WHERE author_id=$1 AND nonce=$2 AND channel_id=$3',[req.userId,body.nonce,id]);if(!existing)return reply.code(409).send({error:'Nonce already used'});return existing;}await publish('message.create',id,message);return reply.code(201).send(message);});
+app.post('/channels/:channelId/messages',async(req,reply)=>{const id=params(req.params,'channelId'),body=messageSchema.parse(req.body);const {channel}=await requireChannel(req.userId,id,Permission.SEND_MESSAGES);if(!['text','dm','group_dm'].includes(channel.type))return reply.code(400).send({error:'Messages require a text or DM channel'});if(body.replyTo){const {rowCount}=await db.query('SELECT 1 FROM messages WHERE id=$1 AND channel_id=$2',[body.replyTo,id]);if(!rowCount)return reply.code(400).send({error:'Reply must refer to this channel'});}const {rows:[message]}=await db.query('INSERT INTO messages(id,channel_id,author_id,content,nonce,reply_to) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(author_id,nonce) DO NOTHING RETURNING *',[ids.next(),id,req.userId,body.content,body.nonce,body.replyTo??null]);if(!message){const {rows:[existing]}=await db.query('SELECT * FROM messages WHERE author_id=$1 AND nonce=$2 AND channel_id=$3',[req.userId,body.nonce,id]);if(!existing)return reply.code(409).send({error:'Nonce already used'});return existing;}await publish('message.create',id,message);return reply.code(201).send(message);});
 app.patch('/channels/:channelId/messages/:messageId',async(req,reply)=>{const id=params(req.params,'channelId'),messageId=params(req.params,'messageId'),body=editMessageSchema.parse(req.body);await requireChannel(req.userId,id,Permission.SEND_MESSAGES);const {rows:[message]}=await db.query('UPDATE messages SET content=$1,edited_at=now() WHERE id=$2 AND channel_id=$3 AND author_id=$4 RETURNING *',[body.content,messageId,id,req.userId]);if(!message)return reply.code(404).send({error:'Message not found'});await publish('message.update',id,message);return message;});
 app.delete('/channels/:channelId/messages/:messageId',async(req,reply)=>{const id=params(req.params,'channelId'),messageId=params(req.params,'messageId');const {bits}=await requireChannel(req.userId,id);const {rowCount}=await db.query('DELETE FROM messages WHERE id=$1 AND channel_id=$2 AND (author_id=$3 OR $4)',[messageId,id,req.userId,hasPermission(bits,Permission.MANAGE_MESSAGES)]);if(!rowCount)return reply.code(404).send({error:'Message not found'});await publish('message.delete',id,{id:messageId,channel_id:id});return reply.code(204).send();});
 app.post('/channels/:channelId/typing',async(req)=>{const id=params(req.params,'channelId');await requireChannel(req.userId,id,Permission.SEND_MESSAGES);await publish('typing.start',id,{userId:req.userId,expiresAt:Date.now()+8000});return {ok:true};});
