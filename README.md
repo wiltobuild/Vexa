@@ -59,11 +59,14 @@ Backend integration requires running Postgres, Redis, API and gateway:
 
 ```sh
 VEXA_INTEGRATION=1 WEB_ORIGIN=http://127.0.0.1:5173 pnpm --filter @vexa/gateway test
+VEXA_INTEGRATION=1 pnpm test:e2e
 ```
 
-On PowerShell set `$env:VEXA_INTEGRATION='1'` and `$env:WEB_ORIGIN='http://127.0.0.1:5173'`, then run the command without its inline environment assignments.
+The first command is a raw `fetch`/`ws` integration test (auth, permissions, gateway delivery/resume). The second, with the same backend running, adds `apps/web/e2e/connected.spec.ts`: it drives real signup/login, server creation, messaging and the invite-join flow through an actual browser against `ConnectedWorkspace`, not just `apps/web/e2e/workspace.spec.ts`'s local-demo suite (which always runs, backend or not).
 
-GitHub Actions provisions Postgres and Redis, checks types/tests/build, runs Chromium UI acceptance tests, then exercises authenticated API and gateway delivery/resume. A skipped integration test is not a passed integration gate.
+On PowerShell set `$env:VEXA_INTEGRATION='1'` and `$env:WEB_ORIGIN='http://127.0.0.1:5173'`, then run the commands without their inline environment assignments.
+
+GitHub Actions provisions Postgres and Redis, checks types/tests/build, starts the API and gateway, exercises authenticated API and gateway delivery/resume, then runs Chromium UI acceptance tests — both the local-demo suite and, with the backend already up, the connected-workspace suite. A skipped integration test is not a passed integration gate.
 
 ## Layout
 

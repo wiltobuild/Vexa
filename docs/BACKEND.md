@@ -26,9 +26,22 @@ Every mutating request requires the configured `Origin` header. Requests use JSO
 | POST | `/channels/:channelId/typing` | Emits an expiring typing event |
 | PUT | `/channels/:channelId/read-state` | `{messageId}`; only moves cursor forward |
 | GET | `/channels/:channelId/search?q=words` | Postgres full-text search, permission checked |
+| GET | `/guilds/:guildId/permissions` | Caller's own guild-level bits and owner flag, `{bits,owner}` |
+| GET/POST | `/guilds/:guildId/roles` | List roles; create `{name,permissions}` (requires `MANAGE_GUILD`) |
+| PATCH/DELETE | `/guilds/:guildId/roles/:roleId` | Edit or delete a role (requires `MANAGE_GUILD`; the `@everyone` role, `id===guildId`, cannot be deleted) |
+| PUT/DELETE | `/guilds/:guildId/members/:userId/roles/:roleId` | Grant/revoke a role (requires `MANAGE_GUILD`) |
+| DELETE | `/guilds/:guildId/members/:userId` | Kick (requires `KICK_MEMBERS`; owner cannot be kicked) |
+| GET/POST | `/guilds/:guildId/bans` | List bans; ban `{userId,reason?}` (requires `BAN_MEMBERS`; also removes membership) |
+| DELETE | `/guilds/:guildId/bans/:userId` | Unban (requires `BAN_MEMBERS`) |
+| PUT | `/guilds/:guildId/members/:userId/timeout` | `{minutes}` (0 clears); strips `SEND_MESSAGES`/`SPEAK` immediately, no reconnect needed (requires `MODERATE_MEMBERS`) |
+| GET | `/guilds/:guildId/audit-log` | Last 50 moderation/role actions (requires `MANAGE_GUILD`) |
 | GET | `/health` | Verifies Postgres and Redis |
 
 All IDs are decimal strings. Content is plain text; clients must render it as text, never raw HTML. The API does not fetch link embeds or accept file uploads yet. Categories do not implicitly inherit overwrites; each channel's explicit overwrite set is authoritative in this pass. Channel creation is owner-only pending the full guild management API.
+
+**Role and moderation permissions never let a non-owner escalate.** Creating/editing a role, or granting one to a member, is rejected with 403 unless every bit in the requested `permissions` is already held by the actor (owner bypasses this, matching `ALL_PERMISSIONS`). So `MANAGE_GUILD` alone is not a path to self-granted `ADMINISTRATOR` or any other bit the actor doesn't hold — see `guildPermissions`/`requireGuild` in `apps/api/src/db.ts`.
+
+The API trusts `X-Forwarded-For` by default (`trustProxy`, see `.env.example`'s `TRUST_PROXY`) so the per-IP rate limiter doesn't collapse into one shared bucket behind a reverse proxy/CDN; set `TRUST_PROXY=false` only when the API is reachable directly with no proxy in front.
 
 ## Gateway v1
 
@@ -42,5 +55,5 @@ REST persists before an atomic Redis Lua script assigns a sequence, appends to t
 
 `pnpm --filter @vexa/shared test` covers overwrite precedence, owner/admin bypass, unrelated overwrites, snowflake order/worker uniqueness/clock regression/exhaustion and contract bounds. `pnpm -r typecheck` checks all service code. Backend integration tests require running services: set `VEXA_INTEGRATION=1` and run `pnpm --filter @vexa/gateway test`.
 
-Pending: full integration execution, transactional outbox, per-user token-bucket quotas, complete denied-route suite, friends/DM APIs, invite and role management, moderation/audit writers, unread mention derivation, presence fan-out, lazy member ranges, uploads/SSRF-isolated embeds, media SFU and two-browser audio test, transcription workers and explicit consent/retention, OTel/Grafana, k6 measurements and production deployment. SQL includes the planned entities without implying their features are implemented. No E2EE is implemented; server-side plaintext search is intentional. Transcription feature flags default off.
+Pending: full integration execution, transactional outbox, per-user token-bucket quotas, complete denied-route suite, friends/DM APIs, unread mention derivation, presence fan-out, lazy member ranges, uploads/SSRF-isolated embeds, media SFU and two-browser audio test, transcription workers and explicit consent/retention, OTel/Grafana, k6 measurements and production deployment. SQL includes the planned entities without implying their features are implemented. No E2EE is implemented; server-side plaintext search is intentional. Transcription feature flags default off. Role management, invites (now reachable from the web UI, not just the API) and member moderation (kick/ban/timeout, with an audit-log writer) are implemented and covered by `apps/gateway/test/integration.test.ts`; friends/DMs remain schema-only.
 

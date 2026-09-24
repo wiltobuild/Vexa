@@ -1,5 +1,5 @@
 import { z } from 'zod';
-export const Permission = { VIEW_CHANNEL:1n, SEND_MESSAGES:2n, MANAGE_MESSAGES:4n, MANAGE_CHANNELS:8n, MANAGE_GUILD:16n, CONNECT:32n, SPEAK:64n, ADMINISTRATOR:128n, KICK_MEMBERS:256n, BAN_MEMBERS:512n } as const;
+export const Permission = { VIEW_CHANNEL:1n, SEND_MESSAGES:2n, MANAGE_MESSAGES:4n, MANAGE_CHANNELS:8n, MANAGE_GUILD:16n, CONNECT:32n, SPEAK:64n, ADMINISTRATOR:128n, KICK_MEMBERS:256n, BAN_MEMBERS:512n, MODERATE_MEMBERS:1024n } as const;
 export const ALL_PERMISSIONS = Object.values(Permission).reduce((a,b)=>a|b,0n);
 export const DEFAULT_PERMISSIONS = Permission.VIEW_CHANNEL|Permission.SEND_MESSAGES|Permission.CONNECT|Permission.SPEAK;
 export type Overwrite = {targetType:'role'|'member'; targetId:string; allow:bigint; deny:bigint};
@@ -27,6 +27,11 @@ export const messageSchema=z.object({content:z.string().trim().min(1).max(4000),
 export const editMessageSchema=z.object({content:z.string().trim().min(1).max(4000)});
 export const channelSchema=z.object({name:z.string().trim().min(1).max(64).regex(/^[a-z0-9-]+$/),type:z.enum(['text','voice','category']).default('text'),parentId:snowflakeSchema.optional()});
 export const guildSchema=z.object({name:z.string().trim().min(2).max(80)});
+const permissionBitsSchema=z.string().regex(/^\d{1,20}$/).refine(v=>BigInt(v)<=ALL_PERMISSIONS).default('0');
+export const roleCreateSchema=z.object({name:z.string().trim().min(1).max(100),permissions:permissionBitsSchema});
+export const roleUpdateSchema=z.object({name:z.string().trim().min(1).max(100).optional(),permissions:permissionBitsSchema.optional()});
+export const banSchema=z.object({userId:snowflakeSchema,reason:z.string().trim().max(300).optional()});
+export const timeoutSchema=z.object({minutes:z.number().int().min(0).max(10080)});
 export const GatewayOpcode={HELLO:0,IDENTIFY:1,HEARTBEAT:2,DISPATCH:3,RESUME:4,HEARTBEAT_ACK:5,INVALID_SESSION:6,SUBSCRIBE:7} as const;
 export const gatewayInputSchema=z.discriminatedUnion('op',[
  z.object({op:z.literal(1),d:z.object({channels:z.array(snowflakeSchema).max(100).default([])})}),

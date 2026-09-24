@@ -32,3 +32,48 @@ test('authenticated text flow, denied access, gateway delivery and replay',{skip
  }finally{for(const s of sockets)s.close();}
 });
 
+test('roles cannot grant permissions the actor lacks, and moderation enforces them',{skip:process.env.VEXA_INTEGRATION!=='1',timeout:30000},async()=>{
+ async function register(){const r=await fetch(api+'/auth/register',{method:'POST',headers:{'Content-Type':'application/json',Origin:origin},body:JSON.stringify({email:`test-${randomUUID()}@example.com`,username:'Integration tester',password:'long-test-password-123!'})});assert.equal(r.status,201);const user=await r.json() as {id:string};return {cookie:r.headers.get('set-cookie')!.split(';')[0],id:user.id};}
+ async function request(path:string,method='GET',body?:unknown,session?:string){return fetch(api+path,{method,headers:{...(session?{Cookie:session}:{}),Origin:origin,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});}
+ const owner=await register(),member=await register(),victim=await register();
+ const guild=await (await request('/guilds','POST',{name:'Mod guild'},owner.cookie)).json() as {id:string};
+ const invite=await (await request(`/guilds/${guild.id}/invites`,'POST',undefined,owner.cookie)).json() as {code:string};
+ assert.equal((await request(`/invites/${invite.code}/join`,'POST',undefined,member.cookie)).status,201);
+ assert.equal((await request(`/invites/${invite.code}/join`,'POST',undefined,victim.cookie)).status,201);
+ // A plain member has no MANAGE_GUILD bit and cannot create roles at all.
+ assert.equal((await request(`/guilds/${guild.id}/roles`,'POST',{name:'nope',permissions:'16'},member.cookie)).status,403);
+ // Owner grants member MANAGE_GUILD (16) + KICK_MEMBERS (256) via a role — enough to moderate, not enough to ban.
+ const modRole=await (await request(`/guilds/${guild.id}/roles`,'POST',{name:'Mod',permissions:'272'},owner.cookie)).json() as {id:string};
+ assert.equal((await request(`/guilds/${guild.id}/members/${member.id}/roles/${modRole.id}`,'PUT',undefined,owner.cookie)).status,204);
+ // Escalation guard: member now has MANAGE_GUILD but still cannot mint a role with bits (e.g. BAN_MEMBERS=512) they don't hold.
+ assert.equal((await request(`/guilds/${guild.id}/roles`,'POST',{name:'escalate',permissions:'512'},member.cookie)).status,403);
+ // Member can grant a role using only bits they do hold (KICK_MEMBERS=256).
+ const subRole=await (await request(`/guilds/${guild.id}/roles`,'POST',{name:'Kicker',permissions:'256'},member.cookie)).json() as {id:string};
+ assert.ok(subRole.id);
+ // Member can now use their granted KICK_MEMBERS to remove the victim.
+ assert.equal((await request(`/guilds/${guild.id}/members/${victim.id}`,'DELETE',undefined,member.cookie)).status,204);
+ assert.deepEqual(await (await request(`/guilds/${guild.id}/channels`,'GET',undefined,victim.cookie)).json(),[]);
+ // Owner bans a fresh stranger; they cannot rejoin, and unbanning restores that ability.
+ const stranger=await register();
+ assert.equal((await request(`/guilds/${guild.id}/bans`,'POST',{userId:stranger.id,reason:'testing'},owner.cookie)).status,204);
+ const bans=await (await request(`/guilds/${guild.id}/bans`,'GET',undefined,owner.cookie)).json() as {user_id:string}[];
+ assert.ok(bans.some(b=>b.user_id===stranger.id));
+ assert.equal((await request(`/invites/${invite.code}/join`,'POST',undefined,stranger.cookie)).status,403);
+ assert.equal((await request(`/guilds/${guild.id}/bans/${stranger.id}`,'DELETE',undefined,owner.cookie)).status,204);
+ assert.equal((await request(`/invites/${invite.code}/join`,'POST',undefined,stranger.cookie)).status,201);
+ // Timeout strips SEND_MESSAGES immediately (no reconnect needed); clearing it restores access.
+ const channels=await (await request(`/guilds/${guild.id}/channels`,'GET',undefined,owner.cookie)).json() as {id:string}[];
+ const channelId=channels[0].id;
+ assert.equal((await request(`/guilds/${guild.id}/members/${member.id}/timeout`,'PUT',{minutes:10},owner.cookie)).status,200);
+ assert.equal((await request(`/channels/${channelId}/messages`,'POST',{content:'muted',nonce:randomUUID()},member.cookie)).status,403);
+ assert.equal((await request(`/guilds/${guild.id}/members/${member.id}/timeout`,'PUT',{minutes:0},owner.cookie)).status,200);
+ assert.equal((await request(`/channels/${channelId}/messages`,'POST',{content:'unmuted',nonce:randomUUID()},member.cookie)).status,201);
+ // Deleting the granting role revokes the derived permission immediately.
+ assert.equal((await request(`/guilds/${guild.id}/roles/${modRole.id}`,'DELETE',undefined,owner.cookie)).status,204);
+ assert.equal((await request(`/guilds/${guild.id}/roles`,'POST',{name:'blocked',permissions:'0'},member.cookie)).status,403);
+ const auditLog=await (await request(`/guilds/${guild.id}/audit-log`,'GET',undefined,owner.cookie)).json() as {action:string}[];
+ assert.ok(auditLog.some(e=>e.action==='member.kick'));
+ assert.ok(auditLog.some(e=>e.action==='member.ban'));
+ assert.ok(auditLog.some(e=>e.action==='member.timeout'));
+});
+

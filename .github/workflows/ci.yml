@@ -29,8 +29,6 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      - run: pnpm --filter @vexa/web exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
       - name: Start backend services
         run: |
           cp .env.example .env
@@ -48,6 +46,12 @@ jobs:
         env:
           VEXA_INTEGRATION: '1'
           WEB_ORIGIN: http://127.0.0.1:5173
+      - run: pnpm --filter @vexa/web exec playwright install --with-deps chromium
+      # Backend is already up (previous steps), so this also runs e2e/connected.spec.ts against
+      # real accounts/Postgres/gateway, not just the local-demo suite in e2e/workspace.spec.ts.
+      - run: pnpm test:e2e
+        env:
+          VEXA_INTEGRATION: '1'
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
