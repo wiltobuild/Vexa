@@ -41,6 +41,10 @@ jobs:
           done
           cat /tmp/vexa-api.log /tmp/vexa-gateway.log
           exit 1
+        env:
+          # The integration + connected-e2e suites legitimately register many accounts back to
+          # back; the production default (5/min) stays untouched for real deployments.
+          AUTH_REGISTER_RATE_LIMIT_MAX: '100'
       - name: API and gateway integration
         run: pnpm --filter @vexa/gateway test
         env:

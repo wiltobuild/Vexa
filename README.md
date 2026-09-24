@@ -55,7 +55,7 @@ pnpm --filter @vexa/web exec playwright install chromium
 pnpm test:e2e
 ```
 
-Backend integration requires running Postgres, Redis, API and gateway:
+Backend integration requires running Postgres, Redis, API and gateway. Start the API with `AUTH_REGISTER_RATE_LIMIT_MAX=100` (or higher) set — the suites below register many accounts back to back and will otherwise hit the default 5/min register limit:
 
 ```sh
 VEXA_INTEGRATION=1 WEB_ORIGIN=http://127.0.0.1:5173 pnpm --filter @vexa/gateway test
