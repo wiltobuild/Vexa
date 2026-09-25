@@ -128,7 +128,7 @@ export default function ConnectedWorkspace({onExit}:{onExit:()=>void}) {
  async function unblockUser(userId:string){try{await request(`/relationships/${userId}/block`,'DELETE');await invalidateSocial('relationships');}catch(e){setError((e as Error).message);}}
  async function openDm(userId:string){setError('');try{const dm=await request<{id:string}>('/dms','POST',{userId});await invalidateSocial('dms');setView('friends');setChannelId(dm.id);setNavOpen(false);}catch(e){setError((e as Error).message);}}
  const openFriends=()=>{setView('friends');setChannelId('');setNavOpen(false);void cache.invalidateQueries({queryKey:[...prefix,'relationships']});void cache.invalidateQueries({queryKey:[...prefix,'dms']});};
- const queryError=[guildsQuery.error,channelsQuery.error,messagesQuery.error].find(Boolean)?.message;
+ const queryError=[guildsQuery.error,channelsQuery.error,messagesQuery.error,dmsQuery.error,relationshipsQuery.error].find(Boolean)?.message;
  const openModal=(type:'guild'|'channel'|'join')=>{setNewName('');setJoinCode('');setModal(type);setError('');};
  const openInvite=()=>{setInvite(null);setModal('invite');setError('');void createInvite();};
 

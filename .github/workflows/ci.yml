@@ -45,6 +45,8 @@ jobs:
           # The integration + connected-e2e suites legitimately register many accounts back to
           # back; the production default (5/min) stays untouched for real deployments.
           AUTH_REGISTER_RATE_LIMIT_MAX: '100'
+          # All synthetic accounts share one runner IP across the API and browser suites.
+          API_RATE_LIMIT_MAX: '1000'
       - name: API and gateway integration
         run: pnpm --filter @vexa/gateway test
         env:

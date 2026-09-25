@@ -8,7 +8,7 @@ declare module 'fastify' {interface FastifyRequest {userId:string}}
 // for all users. Set TRUST_PROXY to a specific hop count/CIDR list in production if the default
 // (trust the whole X-Forwarded-For chain) is too permissive for your deployment topology.
 const app=Fastify({logger:true,bodyLimit:32768,trustProxy:process.env.TRUST_PROXY!=='false'});const ids=new Snowflake(Number(process.env.WORKER_ID??1));const origin=process.env.WEB_ORIGIN??'http://localhost:5173';
-await app.register(cookie);await app.register(cors,{origin,credentials:true});await app.register(rateLimit,{redis,max:120,timeWindow:'1 minute'});
+await app.register(cookie);await app.register(cors,{origin,credentials:true});await app.register(rateLimit,{redis,max:Number(process.env.API_RATE_LIMIT_MAX??120),timeWindow:'1 minute'});
 app.decorateRequest('userId','');
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 app.addHook('onRequest',async(req,reply)=>{
