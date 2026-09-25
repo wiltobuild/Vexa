@@ -11,19 +11,21 @@
     "start": "tsx --env-file=../../.env src/index.ts",
     "typecheck": "tsc --noEmit",
     "migrate": "tsx --env-file=../../.env src/migrate.ts",
-    "db:migrate": "tsx --env-file=../../.env src/migrate.ts"
+    "db:migrate": "tsx --env-file=../../.env src/migrate.ts",
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
-    "@vexa/shared": "workspace:*",
-    "fastify": "^5.2.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.0.0",
+    "@fastify/multipart": "^10.1.2",
     "@fastify/rate-limit": "^10.2.1",
+    "@vexa/shared": "workspace:*",
     "argon2": "^0.41.1",
-    "pg": "^8.13.3",
+    "fastify": "^5.2.1",
     "ioredis": "^5.6.0",
-    "zod": "^3.24.2",
-    "tsx": "^4.19.3"
+    "pg": "^8.13.3",
+    "tsx": "^4.19.3",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
