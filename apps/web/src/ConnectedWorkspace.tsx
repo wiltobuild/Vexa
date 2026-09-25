@@ -53,8 +53,8 @@ export default function ConnectedWorkspace({onExit}:{onExit:()=>void}) {
  const messagesQuery=useQuery({queryKey:messageKey,queryFn:async()=>{const rows=await request<Message[]>(`/channels/${channelId}/messages`);return rows.reverse();},enabled:!!user&&!!channelId,staleTime:10000});
  const rolesQuery=useQuery({queryKey:[...prefix,'roles',guildId],queryFn:()=>request<Role[]>(`/guilds/${guildId}/roles`),enabled:!!user&&!!guildId&&view==='guild'});
  const myPermissionsQuery=useQuery({queryKey:[...prefix,'permissions',guildId],queryFn:()=>request<MyPermissions>(`/guilds/${guildId}/permissions`),enabled:!!user&&!!guildId&&view==='guild'});
- const dmsQuery=useQuery({queryKey:[...prefix,'dms'],queryFn:()=>request<Dm[]>('/dms'),enabled:!!user});
- const relationshipsQuery=useQuery({queryKey:[...prefix,'relationships'],queryFn:()=>request<Relationships>('/relationships'),enabled:!!user});
+ const dmsQuery=useQuery({queryKey:[...prefix,'dms'],queryFn:()=>request<Dm[]>('/dms'),enabled:!!user,refetchInterval:view==='friends'?15000:false});
+ const relationshipsQuery=useQuery({queryKey:[...prefix,'relationships'],queryFn:()=>request<Relationships>('/relationships'),enabled:!!user,refetchInterval:view==='friends'?15000:false});
  const guilds=guildsQuery.data??[],channels=channelsQuery.data??[],members=membersQuery.data??[],messages=messagesQuery.data??[],roles=rolesQuery.data??[];
  const dms=dmsQuery.data??[],relationships=relationshipsQuery.data;
  const myBits=myPermissionsQuery.data?.bits,amOwner=myPermissionsQuery.data?.owner??false;
@@ -127,7 +127,7 @@ export default function ConnectedWorkspace({onExit}:{onExit:()=>void}) {
  async function blockUser(userId:string){try{await request(`/relationships/${userId}/block`,'POST');await invalidateSocial('relationships');}catch(e){setError((e as Error).message);}}
  async function unblockUser(userId:string){try{await request(`/relationships/${userId}/block`,'DELETE');await invalidateSocial('relationships');}catch(e){setError((e as Error).message);}}
  async function openDm(userId:string){setError('');try{const dm=await request<{id:string}>('/dms','POST',{userId});await invalidateSocial('dms');setView('friends');setChannelId(dm.id);setNavOpen(false);}catch(e){setError((e as Error).message);}}
- const openFriends=()=>{setView('friends');setChannelId('');setNavOpen(false);};
+ const openFriends=()=>{setView('friends');setChannelId('');setNavOpen(false);void cache.invalidateQueries({queryKey:[...prefix,'relationships']});void cache.invalidateQueries({queryKey:[...prefix,'dms']});};
  const queryError=[guildsQuery.error,channelsQuery.error,messagesQuery.error].find(Boolean)?.message;
  const openModal=(type:'guild'|'channel'|'join')=>{setNewName('');setJoinCode('');setModal(type);setError('');};
  const openInvite=()=>{setInvite(null);setModal('invite');setError('');void createInvite();};
