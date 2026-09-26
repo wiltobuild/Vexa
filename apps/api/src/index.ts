@@ -1,3 +1,4 @@
+import {registerReactions} from './reactions.js';
 import {flushOutbox} from './outbox.js';
 import {registerRecall} from './recall.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import cors from '@fastify/cors';import rateLimit from '@fastify/rate-limit';import argon2 from 'argon2';import {randomBytes,createHash} from 'node:crypto';import {z,ZodError} from 'zod';
@@ -20,6 +21,7 @@ app.addHook('onRequest',async(req,reply)=>{
 app.setErrorHandler((error,req,reply)=>{if(error instanceof ZodError)return reply.code(400).send({error:'Invalid request',issues:error.issues});const e=error as Error&{code?:string;statusCode?:number};if(e.code==='23505')return reply.code(409).send({error:'Already exists'});if(e.code==='23503')return reply.code(400).send({error:'Referenced resource does not exist'});if(e.statusCode&&e.statusCode<500)return reply.code(e.statusCode).send({error:e.message});req.log.error(error);return reply.code(503).send({error:'Service temporarily unavailable'});});
 async function createSession(userId:string,reply:import('fastify').FastifyReply){const token=randomBytes(32).toString('hex');await db.query("INSERT INTO sessions VALUES($1,$2,now()+interval '30 days')",[hash(token),userId]);reply.setCookie('vexa_session',token,{path:'/',httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'strict',maxAge:2592000});}
 const params=(value:unknown,key:string)=>snowflakeSchema.parse((value as Record<string,unknown>)[key]);
+registerReactions(app);
 app.get('/health',async()=>{await db.query('SELECT 1');await redis.ping();return {ok:true};});
 // Default stays a strict 5/min against credential-stuffing/account-farming; override only for a
 // test harness that legitimately registers many accounts back to back (see ci.yml).

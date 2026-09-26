@@ -43,3 +43,16 @@ BEGIN
  RETURN NEW;
 END $$;
 CREATE OR REPLACE TRIGGER messages_enqueue AFTER INSERT OR UPDATE OR DELETE ON messages FOR EACH ROW EXECUTE FUNCTION enqueue_message_event();
+
+-- Reaction changes use the same durable, permission-filtered stream as messages.
+CREATE OR REPLACE FUNCTION enqueue_reaction_event() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target_message bigint; target_channel bigint;
+BEGIN
+ target_message=CASE WHEN TG_OP='DELETE' THEN OLD.message_id ELSE NEW.message_id END;
+ SELECT channel_id INTO target_channel FROM messages WHERE id=target_message;
+ IF target_channel IS NOT NULL THEN
+  INSERT INTO message_outbox(event_type,channel_id,payload) VALUES('reaction.update',target_channel,jsonb_build_object('messageId',target_message::text));
+ END IF;
+ RETURN NULL;
+END $$;
+CREATE OR REPLACE TRIGGER reactions_enqueue AFTER INSERT OR DELETE ON reactions FOR EACH ROW EXECUTE FUNCTION enqueue_reaction_event();

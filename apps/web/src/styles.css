@@ -16,3 +16,9 @@
 @media(max-width:600px){.avatar-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.recall-controls{padding:16px}.recall .transcript-line{gap:8px;padding:14px 12px}.recall .voice-hero h2{font-size:32px}.recall .transcript-search{margin:12px}.recall .transcript-title{padding:16px}.recall-actions{padding:12px}.recall .transcript-line>span{font-size:10px}}
 
 .recall-tabs{flex-wrap:wrap}.connected-topbar{gap:10px}.connected-topbar .secondary-button{white-space:nowrap}@media(max-width:600px){.connected-topbar{gap:6px;padding-inline:10px}.connected-topbar .beta-tag{display:none}.connected-topbar .secondary-button{padding:7px;font-size:11px}.connected-topbar button[title="Sign out"] span{display:none}}
+
+.reaction-control { margin-top: 6px; }
+.reaction-choices { display: flex; flex-wrap: wrap; gap: 4px; max-width: 300px; padding: 8px; margin-top: 6px; border: 1px solid #ffffff20; border-radius: 10px; background: #23212c; }
+.reaction-choices button { width: 38px; height: 36px; border: 0; border-radius: 7px; background: transparent; cursor: pointer; font-size: 21px; }
+.reaction-choices button:hover, .reaction-choices button:focus-visible { background: #694c9355; outline: 2px solid #ad83ed; }
+.reactions button:disabled { opacity: .45; cursor: wait; }
