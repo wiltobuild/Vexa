@@ -24,7 +24,7 @@ Apply `pnpm db:migrate` and start the API/gateway/database/Redis. Put `OPENAI_AP
 
 ## Reliability fixes
 
-Message insert/update/delete triggers now write a `message_outbox` event in the same database transaction. One publisher across API instances takes an advisory lock, delivers events through the existing Redis ordered stream, and deletes delivered rows. Failures roll back the batch and retry after five seconds. A crash after publication can cause duplicate delivery; clients reconcile by message ID/nonce. This is at-least-once delivery, not exactly once. Typing remains ephemeral.
+Message insert/update/delete triggers now write a `message_outbox` event in the same database transaction. One publisher across API instances takes an advisory lock, delivers events through the existing Redis ordered stream, and deletes delivered rows. Failures roll back the batch and retry after five seconds. A crash after publication can cause duplicate delivery; clients reconcile by message ID/nonce. This is at-least-once delivery, not exactly once. Reaction changes now use the same outbox and shared demo/connected picker; see BACKEND.md. Typing remains ephemeral.
 
 Mobile Voice History now closes the navigation drawer. Connected administrator permissions expose the moderation controls their permissions allow. Message history and gateway events include avatar selections so historical authors also render correctly.
 
@@ -36,6 +36,6 @@ To exercise the actual browser model, set `VEXA_LOCAL_WHISPER_AUDIO` to the abso
 
 ## Still needed for a complete community platform
 
-Real multi-person voice/video/screen sharing and channel-consented transcription still require the SFU and two-peer acceptance tests described in `VOICE-RECALL.md`. Other open work: production attachments/embeds, connected reactions and pins, group DMs, presence fan-out, complete denied-route coverage, connected message virtualization, observability/load measurements and a production deployment. The personal Whisper implementation does not claim to complete those gates.
+Real multi-person voice/video/screen sharing and channel-consented transcription still require the SFU and two-peer acceptance tests described in `VOICE-RECALL.md`. Other open work: production attachments/embeds, connected pins, group DMs, presence fan-out, complete denied-route coverage, connected message virtualization, observability/load measurements and a production deployment. The personal Whisper implementation does not claim to complete those gates.
 
 Implementation references: [OpenAI audio transcription](https://developers.openai.com/api/docs/guides/speech-to-text), [Transformers.js speech recognition](https://huggingface.co/docs/transformers.js/api/pipelines#automaticspeechrecognitionpipeline).
