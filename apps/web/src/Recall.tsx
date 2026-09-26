@@ -78,7 +78,7 @@ export default function Recall({
   speaker?: string;
   channel?: string;
 }) {
-  const [mode, setMode] = useState<"recap" | "sample" | "local">(demo ? "recap" : "local");
+  const [mode, setMode] = useState<"recap" | "sample" | "local">(demo ? "sample" : "local");
   const isSample = demo && mode === "sample";
 
   const [records, setRecords] = useState<Transcript[]>([]),
@@ -393,17 +393,14 @@ export default function Recall({
     }
   }
 
-  if (demo && mode === "recap") return <section className="recall">
-    <DemoRecap/>
-    <div className="button-row recall-tabs" aria-label="Recall mode">
-      <button className="primary-button" aria-pressed="true">AI summary</button>
-      <button className="secondary-button" aria-pressed="false" onClick={() => setMode("sample")}>Sample showcase</button>
-      <button className="secondary-button" aria-pressed="false" onClick={() => setMode("local")}>Try my microphone</button>
-    </div>
-  </section>;
+  const modeButtons = demo && <div className="button-row recall-tabs" aria-label="Recall mode">
+    {([['sample','Sample showcase'],['recap','AI summary'],['local','Try my microphone']] as const).map(([value,label]) => <button key={value} className={mode===value?'primary-button':'secondary-button'} aria-pressed={mode===value} onClick={() => { cancel(); setMode(value); setQuery(''); setError(''); setNotice(''); }}>{label}</button>)}
+  </div>;
+  if (demo && mode === "recap") return <section className="recall">{modeButtons}<DemoRecap/></section>;
 
   return (
     <section className="recall">
+      {modeButtons}
       <div className="voice-hero">
         <span className="eyebrow">VEXA RECALL · WHISPER</span>
         <h2>
@@ -424,38 +421,6 @@ export default function Recall({
               : "Private voice notes · whisper-1"}
         </span>
       </div>
-
-      {demo && (
-        <div className="button-row recall-tabs" aria-label="Recall mode">
-          <button className="secondary-button" aria-pressed="false" onClick={() => { cancel(); setMode("recap"); setQuery(""); setError(""); setNotice(""); }}>AI summary</button>
-          <button
-            className={isSample ? "primary-button" : "secondary-button"}
-            aria-pressed={isSample}
-            onClick={() => {
-              cancel();
-              setMode("sample");
-              setQuery("");
-              setError("");
-              setNotice("");
-            }}
-          >
-            Sample showcase
-          </button>
-          <button
-            className={!isSample ? "primary-button" : "secondary-button"}
-            aria-pressed={!isSample}
-            onClick={() => {
-              cancel();
-              setMode("local");
-              setQuery("");
-              setError("");
-              setNotice("");
-            }}
-          >
-            Try my microphone
-          </button>
-        </div>
-      )}
 
       <div className="recall-controls">
         {isSample ? (
