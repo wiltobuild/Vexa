@@ -22,3 +22,38 @@
 .reaction-choices button { width: 38px; height: 36px; border: 0; border-radius: 7px; background: transparent; cursor: pointer; font-size: 21px; }
 .reaction-choices button:hover, .reaction-choices button:focus-visible { background: #694c9355; outline: 2px solid #ad83ed; }
 .reactions button:disabled { opacity: .45; cursor: wait; }
+
+.demo-recap { max-width: 960px; margin: 0 auto 28px; }
+.recap-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 26px; }
+.recap-heading>svg { color: var(--purple); margin-top: 22px; }
+.recap-heading h2 { font-family: 'Space Grotesk', sans-serif; font-size: clamp(28px, 3.3vw, 46px); line-height: 1.12; letter-spacing: -1.4px; margin: 12px 0; color: #faf7ff; }
+.recap-heading p, .recap-highlights p { color: #aaa4b8; line-height: 1.65; }
+.recap-summary { padding: 26px; border: 1px solid #b798ff26; border-radius: 16px; background: linear-gradient(120deg,#a981ff12,#20202a); }
+.recap-summary h3 { font-size: clamp(21px, 2.3vw, 30px); line-height: 1.3; margin: 14px 0; color: #f4efff; }
+.recap-summary>p { font-size: 16px; line-height: 1.85; color: #c8c2d4; }
+.recap-sample-label { display: inline-flex; align-items: center; gap: 7px; border-radius: 20px; background: #e99c4220; color: #efb478; font-size: 11px; padding: 6px 10px; margin-top: 18px; }
+.recap-highlights-title { margin: 28px 0 16px; font-size: 21px; color: #efebf7; }
+.recap-highlights { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.recap-highlights li { display: flex; align-items: center; gap: 18px; padding: 20px; border: 1px solid #ffffff10; border-radius: 14px; background: #11121855; }
+.recap-highlight-icon { display: grid; place-items: center; width: 58px; height: 58px; flex-shrink: 0; background: #ae8bff10; color: #bd9bff; border-radius: 13px; }
+.recap-highlights h4 { font-size: 17px; margin: 5px 0 7px; color: #ece7f6; }
+.recap-highlights .recap-time { font-size: 11px; color: #92849f; font-variant-numeric: tabular-nums; }
+.recap-stats { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); margin: 26px 0 18px; padding-top: 24px; border-top: 1px solid #ffffff12; text-align: center; gap: 10px; }
+.recap-stats>div { display: flex; flex-direction: column-reverse; gap: 8px; }
+.recap-stats dt { font-size: 12px; color: #aaa4b8; }
+.recap-stats dd { margin: 0; font-size: 30px; font-weight: 600; color: #f4efff; }
+.recap-footnote { color: #8d829c; font-size: 11px; line-height: 1.6; }
+@media(max-width:600px) { .recap-summary { padding: 18px; } .recap-summary>p { font-size: 14px; } .recap-heading { gap: 10px; } .recap-heading>svg { width: 24px; } .recap-highlights li { align-items: flex-start; gap: 12px; padding: 15px; } .recap-highlight-icon { width: 36px; height: 40px; } .recap-highlight-icon svg { width: 21px; } .recap-highlights h4 { font-size: 15px; } .recap-highlights p { font-size: 13px; } .recap-stats dt { font-size: 10px; } }
+
+.recall>.recall-tabs { margin: 0 0 26px; }
+.recap-history { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-bottom: 22px; }
+.recap-history button { display: flex; flex-direction: column; gap: 9px; text-align: left; padding: 16px; border: 1px solid #ffffff14; border-radius: 12px; background: #12131a; }
+.recap-history button[aria-pressed="true"] { border-color: #b391ff; background: #a17bff17; }
+.recap-history span,.recap-history small { font-size: 11px; color: #a59aaf; line-height: 1.5; }
+.recap-history strong { font-size: 14px; }
+.recap-session-meta { font-size: 12px; color: #b9acc8; line-height: 1.7; margin: 0 0 14px; }
+.voice-room-members { display: flex; flex-wrap: wrap; gap: 18px; margin: 26px 0; }
+.voice-room-members button { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px; border-radius: 16px; border: 1px solid #ffffff12; background: #a384ff09; }
+.voice-room-members small { color: #9989ac; font-size: 11px; }
+.voice-room>.button-row { margin-top: 24px; flex-wrap: wrap; }
+@media(max-width:700px){.recap-history { grid-template-columns: 1fr; }.recap-history button { padding: 12px; gap: 5px; }}
