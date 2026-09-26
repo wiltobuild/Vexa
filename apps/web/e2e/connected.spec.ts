@@ -38,10 +38,17 @@ test.describe('connected workspace (real backend)', () => {
   await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Hello from Playwright');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expect(page.getByText('Hello from Playwright', { exact: true })).toBeVisible();
+  await page.locator('article').filter({hasText:'Hello from Playwright'}).getByRole('button',{name:'Pin message',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Unpin message',exact:true})).toBeVisible();
   await page.reload();
   await connect(page);
   await expect(page.getByRole('button', { name: 'E2E Squad', exact: true })).toBeVisible();
   await expect(page.getByText('Hello from Playwright', { exact: true })).toBeVisible();
+  await page.getByRole('button',{name:'Pinned messages',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'1 pinned message',exact:true})).toBeVisible();
+  await expect(page.getByText('Hello from Playwright',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Unpin message',exact:true}).click();
+  await expect(page.getByText('No pins yet',{exact:true})).toBeVisible();
  });
 
  test('an invite lets a second account join and see live messages', async ({ page, browser }) => {

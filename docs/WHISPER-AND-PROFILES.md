@@ -36,6 +36,6 @@ To exercise the actual browser model, set `VEXA_LOCAL_WHISPER_AUDIO` to the abso
 
 ## Still needed for a complete community platform
 
-Real multi-person voice/video/screen sharing and channel-consented transcription still require the SFU and two-peer acceptance tests described in `VOICE-RECALL.md`. Other open work: production attachments/embeds, connected pins, group DMs, presence fan-out, complete denied-route coverage, connected message virtualization, observability/load measurements and a production deployment. The personal Whisper implementation does not claim to complete those gates.
+Real multi-person voice/video/screen sharing and channel-consented transcription still require the SFU and two-peer acceptance tests described in `VOICE-RECALL.md`. Other open work: production attachments/embeds, group DMs, presence fan-out, complete denied-route coverage, connected message virtualization, observability/load measurements and a production deployment. The personal Whisper implementation does not claim to complete those gates.
 
 Implementation references: [OpenAI audio transcription](https://developers.openai.com/api/docs/guides/speech-to-text), [Transformers.js speech recognition](https://huggingface.co/docs/transformers.js/api/pipelines#automaticspeechrecognitionpipeline).

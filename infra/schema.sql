@@ -56,3 +56,16 @@ BEGIN
  RETURN NULL;
 END $$;
 CREATE OR REPLACE TRIGGER reactions_enqueue AFTER INSERT OR DELETE ON reactions FOR EACH ROW EXECUTE FUNCTION enqueue_reaction_event();
+
+CREATE TABLE IF NOT EXISTS message_pins (message_id bigint PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,pinned_by bigint NOT NULL REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now());
+CREATE OR REPLACE FUNCTION enqueue_pin_event() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target_message bigint; target_channel bigint;
+BEGIN
+ target_message=CASE WHEN TG_OP='DELETE' THEN OLD.message_id ELSE NEW.message_id END;
+ SELECT channel_id INTO target_channel FROM messages WHERE id=target_message;
+ IF target_channel IS NOT NULL THEN
+  INSERT INTO message_outbox(event_type,channel_id,payload) VALUES('pin.update',target_channel,jsonb_build_object('messageId',target_message::text));
+ END IF;
+ RETURN NULL;
+END $$;
+CREATE OR REPLACE TRIGGER pins_enqueue AFTER INSERT OR DELETE ON message_pins FOR EACH ROW EXECUTE FUNCTION enqueue_pin_event();
