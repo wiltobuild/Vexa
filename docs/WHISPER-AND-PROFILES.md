@@ -39,3 +39,7 @@ To exercise the actual browser model, set `VEXA_LOCAL_WHISPER_AUDIO` to the abso
 Real multi-person voice/video/screen sharing and channel-consented transcription still require the SFU and two-peer acceptance tests described in `VOICE-RECALL.md`. Other open work: production attachments/embeds, group DMs, presence fan-out, complete denied-route coverage, connected message virtualization, observability/load measurements and a production deployment. The personal Whisper implementation does not claim to complete those gates.
 
 Implementation references: [OpenAI audio transcription](https://developers.openai.com/api/docs/guides/speech-to-text), [Transformers.js speech recognition](https://huggingface.co/docs/transformers.js/api/pipelines#automaticspeechrecognitionpipeline).
+
+## AI summary showcase
+
+Demo Voice History opens on the supplied “While You Were Gone” Helldivers session recap: three timestamped highlights, 12 topics and four participants. It is explicitly labeled as an illustrative AI-generated recap, not a summary generated from the user's microphone or an attached recording. The separate Sample showcase and Try my microphone flows remain available. Connected private notes are unchanged.

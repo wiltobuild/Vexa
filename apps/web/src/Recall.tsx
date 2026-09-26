@@ -1,3 +1,4 @@
+import DemoRecap from "./DemoRecap";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -77,7 +78,7 @@ export default function Recall({
   speaker?: string;
   channel?: string;
 }) {
-  const [mode, setMode] = useState<"sample" | "local">("sample");
+  const [mode, setMode] = useState<"recap" | "sample" | "local">(demo ? "recap" : "local");
   const isSample = demo && mode === "sample";
 
   const [records, setRecords] = useState<Transcript[]>([]),
@@ -392,6 +393,15 @@ export default function Recall({
     }
   }
 
+  if (demo && mode === "recap") return <section className="recall">
+    <DemoRecap/>
+    <div className="button-row recall-tabs" aria-label="Recall mode">
+      <button className="primary-button" aria-pressed="true">AI summary</button>
+      <button className="secondary-button" aria-pressed="false" onClick={() => setMode("sample")}>Sample showcase</button>
+      <button className="secondary-button" aria-pressed="false" onClick={() => setMode("local")}>Try my microphone</button>
+    </div>
+  </section>;
+
   return (
     <section className="recall">
       <div className="voice-hero">
@@ -417,6 +427,7 @@ export default function Recall({
 
       {demo && (
         <div className="button-row recall-tabs" aria-label="Recall mode">
+          <button className="secondary-button" aria-pressed="false" onClick={() => { cancel(); setMode("recap"); setQuery(""); setError(""); setNotice(""); }}>AI summary</button>
           <button
             className={isSample ? "primary-button" : "secondary-button"}
             aria-pressed={isSample}

@@ -100,6 +100,7 @@ test("sample replay, search, download and mobile layout", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Toggle channels" }).click();
   await page.getByRole("button", { name: /Voice history/ }).click();
+  await page.getByRole("button", { name: "Sample showcase", exact: true }).click();
   await page.getByRole("button", { name: "Replay transcription demo" }).click();
   await expect(page.locator(".transcript-line")).toHaveCount(5, {
     timeout: 10000,
