@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type Person = {id:string; name:string; color:string; initials:string; status:'online'|'idle'|'dnd'|'offline'; role:string; activity?:string};
+export type Person = {avatar?:string;id:string; name:string; color:string; initials:string; status:'online'|'idle'|'dnd'|'offline'; role:string; activity?:string};
 export type Message = {id:string; channel:string; author:string; content:string; time:string; edited?:boolean; reply?:string; reactions:Record<string,string[]>; image?:string; attachment?:{name:string;data:string}; pinned?:boolean};
 export type Channel = {id:string; guild:string; name:string; category:string; kind:'text'|'voice'|'dm'; description?:string};
 export type Guild = {id:string;name:string;initials:string;color:string};

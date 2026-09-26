@@ -1,6 +1,6 @@
 # Vexa Recall: consent-based voice history
 
-Status: design + clearly labeled sample transcript UI. No audio is captured or sent to a transcription provider in this pass.
+Status: the group-call flow below remains a design. Personal voice notes are implemented: real on-device Whisper in the demo and authenticated server-side whisper-1 in connected mode, with consent, timestamps, search, export and private retention. See [Whisper and profiles](WHISPER-AND-PROFILES.md). No group call or other participant is recorded.
 
 ## Flow
 

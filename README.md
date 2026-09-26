@@ -8,12 +8,12 @@
 
 Two intentionally separate modes:
 
-- **Local demo:** an immediately usable product preview with device-local servers/channels, messages, safe Markdown, replies, edits/deletion, reactions, pins, search, local attachments (1 MB), profile preferences, friends/DM interactions, and a searchable sample voice transcript. This is not a multi-user service. Sample people, presence, badges, and voice participants are illustrative.
+- **Local demo:** an immediately usable product preview with device-local servers/channels, messages, safe Markdown, replies, edits/deletion, reactions, pins, search, local attachments (1 MB), profile preferences, friends/DM interactions, 12 customizable character avatars, and real on-device Whisper transcription with a replayable sample showcase. This is not a multi-user service. Sample people, presence, badges, and voice participants are illustrative.
 - **Connected workspace:** real cookie-based accounts, Postgres guilds/channels and messages, Redis/WebSocket delivery, reconnect/resume, optimistic sends with nonce reconciliation and failed-message retry, message edits/deletion/replies, pagination, typing, read-state writes, member lists, and full-text search. Click **Connect account → Open connected workspace** after starting the backend.
 
 The shared package includes Zod contracts, 64-bit Snowflake IDs, permission bitfields, and tested overwrite precedence. Every channel API access and gateway dispatch checks server-side permissions. React uses TanStack Query for connected data and Zustand for the isolated local demo. The demo message list uses TanStack Virtual; connected history is paginated and still needs virtualization for long sessions.
 
-**This is a first implementation pass, not a finished Discord replacement.** Real voice/video/screen share, transcription workers, group DMs, production uploads/embeds, comprehensive denial coverage, observability and measured scale remain open. Roles, invites, moderation (kick/ban/timeout) and friends/1:1 DMs are implemented. No audio is captured by the voice preview. No performance numbers are claimed.
+**This is a first implementation pass, not a finished Discord replacement.** Real voice/video/screen share, group-call transcription workers, group DMs, production uploads/embeds, comprehensive denial coverage, observability and measured scale remain open. Roles, invites, moderation (kick/ban/timeout) and friends/1:1 DMs are implemented. Recall records audio only after explicit consent. Demo Whisper runs on-device; connected Whisper uses the server API. No performance numbers are claimed.
 
 ## Quick start: interface
 
@@ -25,6 +25,12 @@ pnpm dev
 ```
 
 Open **http://127.0.0.1:5173**. No credentials or infrastructure are needed for the local demo. Its data stays in this browser's local storage; separate browsers do not share it. Browser storage is not used for account credentials.
+
+## Whisper and avatars
+
+Open **Voice history → Try my microphone** for real on-device English Whisper, or replay the sample showcase. The first transcription downloads the model; audio stays on the device. Use **Transcribe example audio** for a reproducible demo. Open **Your profile** to select/remix a character and save. All nine sample members have different characters; existing connected accounts receive stable avatars from their IDs.
+
+Connected **Voice Recall** uses `whisper-1` with server-only `OPENAI_API_KEY`, private searchable notes, timestamps, export, deletion and 30-day retention. Run the schema migration before starting the updated API. See [setup, demo script, limitations and tests](docs/WHISPER-AND-PROFILES.md).
 
 ## Full local stack
 
@@ -83,6 +89,6 @@ docs           Architecture, timeline-free gates, feature design, asset provenan
 
 See [backend contracts](docs/BACKEND.md), [timeline-free build gates](docs/ROADMAP.md), [voice transcription design](docs/VOICE-RECALL.md), and [asset attribution](docs/ASSETS.md).
 
-No raw HTML is rendered from Markdown. The API does not fetch arbitrary URLs or accept uploads in this pass; SSRF-safe embeds and validated object-storage uploads must land with their required security tests. The live event pipeline still needs a transactional outbox to close the Postgres commit/Redis publish failure window. Do not treat the current implementation as exactly-once delivery.
+No raw HTML is rendered from Markdown. The API accepts bounded, consented audio for private Whisper notes but does not fetch arbitrary URLs or accept message attachments; SSRF-safe embeds and validated object-storage uploads must land with their required security tests. A transactional message outbox now retries Redis delivery after failures. Delivery is at least once; clients reconcile duplicates by message ID/nonce.
 
 Icons are open-source Lucide. The landscape is original generated artwork, and the lettermark/avatars are original simple UI assets.
