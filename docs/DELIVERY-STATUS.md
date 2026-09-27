@@ -28,8 +28,8 @@ Updated: 2026-09-27. The complete scope and release gates are in [the delivery p
 
 ## Current implementation batch
 
-Implemented and awaiting final CI evidence: ordered transactional migrations with checksums and concurrency locking; preserved legacy bootstrap path; validated production startup configuration; explicit proxy allowlists; safe default quotas; separate liveness/readiness endpoints; real-Postgres migration regression tests in CI; migration/configuration operating instructions.
+Implemented in [PR #15](https://github.com/wiltobuild/Vexa/pull/15); validation evidence is recorded in its CI checks: ordered transactional migrations with checksums and concurrency locking; preserved legacy bootstrap path; validated production startup configuration; explicit proxy allowlists; safe default quotas; separate liveness/readiness endpoints; real-Postgres migration regression tests in CI; migration/configuration operating instructions.
 
 These are Phase 1 foundations, not completion of Phase 1 or the full plan. The existing product features remain available. Phase 0 has an audited baseline, documented budget/region constraints and issues, but scope/operational ownership decisions remain open.
 
-Next: validate the new migration tests in CI; select a concrete staging deployment within an agreed budget/region; build reproducible deployment artifacts and demonstrate restore/rollback. Account recovery and the early two-peer audio spike follow the foundations. No draft-message implementation has started.
+Next: select a concrete staging deployment within an agreed budget/region; build reproducible deployment artifacts and demonstrate restore/rollback. Account recovery and the early two-peer audio spike follow the foundations. No draft-message implementation has started.
