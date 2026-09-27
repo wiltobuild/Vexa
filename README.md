@@ -87,6 +87,8 @@ docs           Architecture, timeline-free gates, feature design, asset provenan
 
 ## Design and next gates
 
+Start with the [professional delivery plan](docs/PROFESSIONAL-DELIVERY-PLAN.md): audited status, 12 phases, dependencies, acceptance gates, operating targets and release handoff.
+
 See [backend contracts](docs/BACKEND.md), [timeline-free build gates](docs/ROADMAP.md), [voice transcription design](docs/VOICE-RECALL.md), and [asset attribution](docs/ASSETS.md).
 
 No raw HTML is rendered from Markdown. The API accepts bounded, consented audio for private Whisper notes but does not fetch arbitrary URLs or accept message attachments; SSRF-safe embeds and validated object-storage uploads must land with their required security tests. A transactional message outbox now retries Redis delivery after failures. Delivery is at least once; clients reconcile duplicates by message ID/nonce.

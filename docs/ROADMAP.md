@@ -1,5 +1,7 @@
 # Build gates — no timelines
 
+For current prioritization and professional release criteria, use the [Professional Delivery Plan](PROFESSIONAL-DELIVERY-PLAN.md). This file preserves the earlier implementation snapshot.
+
 The phases below are acceptance gates, not time estimates. A phase remains open until its stated checks actually pass; having an endpoint, schema, or sample interface alone does not satisfy the gate.
 
 | Phase | Deliverable | Done criteria | This pass |
