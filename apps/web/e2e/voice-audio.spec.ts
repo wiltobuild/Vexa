@@ -1,9 +1,29 @@
 import { test, expect, type Page } from '@playwright/test';
+import net from 'node:net';
 
 // This is intentionally gated like connected.spec.ts: it uses the real API,
 // gateway, media service, Postgres, and Redis rather than mocked endpoints.
+// Unlike connected.spec.ts, VEXA_INTEGRATION=1 alone isn't enough here --
+// CI's ci.yml sets that flag and starts api+gateway, but doesn't (yet) bring
+// up the Docker-hosted apps/media service (see docs/tasks/audio-spike/
+// verification.md "CI wiring" follow-up). Without this extra check, CI would
+// try to run this test against a media port nothing is listening on and fail
+// with ECONNREFUSED instead of skipping cleanly.
 const live = process.env.VEXA_INTEGRATION === '1';
 const unique = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+
+function mediaPortReachable(port = 3003, host = '127.0.0.1', timeoutMs = 1000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host });
+    const done = (ok: boolean) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+    socket.setTimeout(timeoutMs, () => done(false));
+  });
+}
 
 async function connect(page: Page) {
   await page.goto('/');
@@ -32,6 +52,7 @@ async function inboundAudioStats(page: Page) {
 test.describe('voice audio (real backend and native Chromium media)', () => {
   test('two authenticated browsers exchange fake-device audio over mediasoup', async ({ browser }) => {
     test.skip(!live, 'set VEXA_INTEGRATION=1 with the API, gateway, media, Postgres and Redis stack running');
+    test.skip(live && !(await mediaPortReachable()), 'apps/media (port 3003) is not reachable -- start it with `docker compose up -d media` (see docs/tasks/audio-spike/verification.md)');
     test.setTimeout(90_000);
     const ownerContext = await browser.newContext();
     const guestContext = await browser.newContext();
