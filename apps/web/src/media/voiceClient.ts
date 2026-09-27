@@ -66,6 +66,10 @@ export class VoiceClient {
  }
  setMuted(muted:boolean){if(this.producer)this.producer.pause?.();if(!muted)this.producer?.resume?.();}
  setDeafened(deafened:boolean){for(const {audio} of this.consumers.values())audio.muted=deafened;}
+ async getInboundAudioStatsForTests(){
+  const stats=await this.recvTransport.getStats();
+  return [...stats.values()].filter(stat=>stat.type==='inbound-rtp'&&stat.kind==='audio').map(stat=>({packetsReceived:stat.packetsReceived??0,bytesReceived:stat.bytesReceived??0}));
+ }
  async leave(){this.unsubscribe();try{await this.signaling.request('leave',{});}catch{}this.producer?.close();this.stream?.getTracks().forEach(track=>track.stop());this.stream=null;this.sendTransport?.close();this.recvTransport?.close();for(const id of [...this.consumers.keys()])this.removeConsumer(id);this.signaling.close();}
  private removeConsumersForUser(userId:string){for(const [id,entry] of this.consumers)if(entry.userId===userId)this.removeConsumer(id);}
  private removeProducer(producerId:string){const consumerId=this.producerConsumers.get(producerId);if(consumerId)this.removeConsumer(consumerId);}
