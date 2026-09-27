@@ -1,5 +1,10 @@
-import {createServer} from 'node:http';import {createHash,randomUUID} from 'node:crypto';import {WebSocketServer,WebSocket} from 'ws';import {db,redis,requireChannel} from '@vexa/api/db';import {gatewayInputSchema,type Dispatch} from '@vexa/shared';
-const origin=process.env.WEB_ORIGIN??'http://localhost:5173';const wss=new WebSocketServer({noServer:true,maxPayload:16384});const server=createServer((_req,res)=>{res.writeHead(200,{'Content-Type':'application/json'});res.end('{"service":"vexa-gateway"}');});
+import {createServer} from 'node:http';import {createHash,randomUUID} from 'node:crypto';import {WebSocketServer,WebSocket} from 'ws';import {db,redis,requireChannel,config} from '@vexa/api/db';import {gatewayInputSchema,type Dispatch} from '@vexa/shared';
+const origin=config.webOrigin;const wss=new WebSocketServer({noServer:true,maxPayload:16384});const server=createServer((req,res)=>{
+ const sendHealth=(status:number,ok:boolean)=>{res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify({service:'vexa-gateway',ok}));};
+ if(req.url==='/live'||req.url==='/'){sendHealth(200,true);return;}
+ if(req.url==='/ready'||req.url==='/health'){void Promise.all([db.query('SELECT 1'),redis.ping()]).then(()=>sendHealth(200,true)).catch(()=>sendHealth(503,false));return;}
+ sendHealth(404,false);
+});
 type Client={ws:WebSocket;userId:string;tokenHash:string;sessionId?:string;channels:Set<string>;seq:number;heartbeat:number;queue:Promise<void>;pending:number;window:number;messages:number};const clients=new Set<Client>();
 const send=(c:Client,data:unknown)=>{if(c.ws.readyState===WebSocket.OPEN){if(c.ws.bufferedAmount>1024*1024)c.ws.close(4008,'Slow client');else c.ws.send(JSON.stringify(data));}};
 const queue=(c:Client,fn:()=>Promise<void>)=>{if(++c.pending>500){c.ws.close(4008,'Backpressure');return;}c.queue=c.queue.then(fn).catch(e=>{console.error('Gateway operation failed',e instanceof Error?e.message:'unknown');c.ws.close(1011,'Service unavailable');}).finally(()=>{c.pending--;});};
@@ -23,5 +28,5 @@ server.on('upgrade',(req,socket,head)=>{void(async()=>{if(req.headers.origin!==o
  })().catch(()=>socket.destroy());});
 const timer=setInterval(()=>{for(const c of clients)if(Date.now()-c.heartbeat>60000)c.ws.close(4009,'Heartbeat timeout');},10000);
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{clearInterval(timer);for(const c of clients)c.ws.close(1001,'Restarting');server.close();void Promise.all([db.end(),redis.quit(),sub.quit()]).then(()=>process.exit(0));});
-server.listen(Number(process.env.GATEWAY_PORT??3002),process.env.HOST??'127.0.0.1',()=>console.log('Vexa gateway listening'));
+server.listen(config.gatewayPort,config.host,()=>console.log('Vexa gateway listening'));
 
