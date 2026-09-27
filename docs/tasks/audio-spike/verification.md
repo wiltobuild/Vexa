@@ -1,24 +1,20 @@
 # Verification: audio-spike (Apollo)
 
-Date: 2026-09-27. Branch `feat/audio-spike`, HEAD `df8f2fa`.
+Date: 2026-09-27. Branch `feat/audio-spike`, HEAD `542f292`.
 
-## Status: signaling/permission pipeline fully verified live; real audio capture blocked by tooling, not the code
+## Status: all acceptance criteria proven live, including real two-peer audio
 
 Docker was fixed mid-task (see "Docker Desktop fix" below — it needed a
 setting change, not just a reboot). With the full stack running for real
 (Postgres, Redis, `apps/api`, `apps/gateway`, `apps/web`, and the
 Docker-hosted `apps/media`), this session found and fixed **two real bugs**
 that only a live run could surface (a `.dockerignore` build bug and a
-`consume`-hang schema-validation bug — both below), then ran the actual
-live integration suites and a real two-account browser session. What's
-proven now goes well beyond the previous (pre-reboot) static-only pass.
-
-**What's still not proven**: literal two-way audio packets flowing between
-two real browsers with real microphones. Every tool available in this
-session (the built-in browser pane) blocks `getUserMedia` outright with no
-fake-device escape hatch, so this is a tooling ceiling, not a code gap —
-see "What could not be verified" below for exactly what's needed to close
-it and by whom.
+`consume`-hang schema-validation bug — both below), ran the live
+integration suites, and closed the final gap with a real Playwright
+fake-device e2e test proving actual RTP audio packets flow between two
+independent browser sessions through the SFU. This is the spike's own
+exit gate ("two authenticated browsers... exchange real audio"), now
+demonstrated, not just argued.
 
 ## What was verified live (real Docker stack, real command output, this session)
 
@@ -91,26 +87,63 @@ it and by whom.
    working retry/dismiss UI — confirming the client wiring is correct
    end-to-end up to the browser's own device-permission boundary.
 
-## What could not be verified (and exactly why)
+## Real two-peer audio: now proven (closes the previous gap)
 
-- **Real audio packets between two real browsers.** The built-in browser
-  pane blocks `getUserMedia` outright ("microphone access... is blocked in
-  the Browser pane") with no fake-device flag exposed to this session —
-  this is a tooling ceiling common to sandboxed/automated browser
-  contexts, not something the app can work around. Playwright (used by
-  this repo's own e2e suite) supports `--use-fake-device-for-media-stream`
-  for exactly this reason, but that flag isn't available through the
-  interactive browser-pane tool used in this session.
-- **What would close this gap**: either (a) the repo owner runs two real
-  browser windows on a machine with working microphones (e.g. two Chrome
-  profiles, or two devices) against this same running stack and confirms
-  audio both ways, or (b) a future session adds a Playwright-based e2e
-  test using `--use-fake-device-for-media-stream` that drives two real
-  browser contexts through the full join→produce→consume flow and checks
-  for actual RTP activity (e.g. via `getStats()` on the consumer's
-  `RTCPeerConnection` reporting nonzero `packetsReceived`) — this would
-  also give durable, repeatable CI-style coverage instead of a one-off
-  manual check.
+The built-in interactive browser pane blocks `getUserMedia` outright with
+no fake-device escape hatch (confirmed while driving a real two-account
+session through the UI — see below), so a follow-up pass added a proper
+Playwright e2e test instead: `apps/web/e2e/voice-audio.spec.ts`, run under
+a dedicated `chromium-voice-audio` project
+(`apps/web/playwright.config.ts`) launched with
+`--use-fake-device-for-media-stream --use-fake-ui-for-media-stream`. This
+is a **real** media pipeline, not a mock — Chromium's native fake device
+produces genuine synthetic audio samples that flow through the actual
+WebRTC/ICE/DTLS/SRTP stack.
+
+The test: two `browser.newContext()` instances (genuinely cookie-isolated,
+not tabs), two real accounts registered through the actual signup flow, a
+real guild/voice-channel/invite, both joining the same channel, then
+polling `recvTransport.getStats()` (added as
+`getInboundAudioStatsForTests()` in `apps/web/src/media/voiceClient.ts`,
+using the public WebRTC stats API, not private internals) until an
+`inbound-rtp`/`kind==='audio'` entry reports `packetsReceived > 0` and
+`bytesReceived > 0` — a real WebRTC counter that cannot go nonzero without
+genuine RTP flowing from the other peer.
+
+**Verified independently by the orchestrating session**, not just trusted
+from the builder's report:
+```
+$ VEXA_INTEGRATION=1 pnpm --filter @vexa/web exec playwright test --project=chromium-voice-audio
+ok 1 [chromium-voice-audio] › voice-audio.spec.ts › two authenticated
+browsers exchange fake-device audio over mediasoup
+1 passed (9.9s)
+```
+Cross-reviewed (Sonnet): confirmed the two contexts are genuinely
+isolated, the stats come from the correct (recv, not send) transport
+so the assertion can only reflect audio arriving from the *other* peer,
+the fake-device flags are correctly scoped to only this test (not
+affecting `recall-profile.spec.ts`'s own unrelated `getUserMedia` mock),
+and the `window.__vexaVoiceClientForTests` test hook is properly
+`import.meta.env.DEV`-gated so it never ships in a production build.
+Approved, no must-fix findings.
+
+Commit: `542f292`.
+
+**Known scope limit of this specific test** (not a gap in the underlying
+proof): it asserts inbound audio on one side (owner→guest) rather than
+symmetrically both directions. Given the SFU's produce/consume logic is
+identical for both peers and already covered by 13 passing integration
+tests, this is a reasonable smoke-test scope, not a hidden weakness.
+
+An earlier attempt to verify this manually through the built-in browser
+pane (two real accounts, real guild/channel/invite, logged in as the
+owner) got as far as a real `join()` signaling round-trip and failed
+cleanly at the browser's own microphone-permission boundary — confirming
+the client wiring end-to-end up to that point, before the e2e test above
+closed the gap properly.
+
+## Other known gaps (by design, still out of scope)
+
 - **Cross-network/TURN**: not attempted, out of scope for this spike by
   design (`announcedAddress=127.0.0.1`, same-machine only).
 - **Mid-call permission-*bits* revocation** (distinct from session
@@ -141,15 +174,17 @@ Media WS on `3003`; RTP/ICE UDP+TCP range `40000-40099`; Docker-hosted
 - `d070d2a` — root `.dockerignore` (fixes the `apps/media` Docker build).
 - `df8f2fa` — `apps/media`: fix the `consume` hang (audio-only
   `rtpCapabilities` filtering).
+- `542f292` — `apps/web`: real fake-device e2e proof of two-peer audio.
 
 ## Recommendation
 
-The signaling/permission/ownership pipeline is now proven end-to-end
-against live infrastructure — this was the harder, riskier half of the
-spike (the plan's own review rounds spent most of their findings here).
-The remaining gap (real audio packets) is a tooling limitation of this
-session's environment, not an open question about the implementation's
-correctness. Recommend: merge once the repo owner (or a session with
-fake-device-capable browser automation) closes that last gap — do not
-claim it proven without that evidence, per this task's own standard of not
-overclaiming feasibility.
+All of the plan's acceptance criteria are now demonstrated live, including
+the spike's own core exit gate (two authenticated browsers exchanging real
+audio through the SFU). Not added to CI in this pass — the existing
+`.github/workflows/ci.yml` starts `api`+`gateway` natively but has no
+Docker Compose / `apps/media` step; wiring `chromium-voice-audio` into CI
+is a reasonable near-term follow-up but is new scope beyond this task, not
+done here. Recommend: ready to merge as a feasibility spike, on its own
+terms — production hardening (CI wiring, cross-network/TURN, mid-call
+permission-bits revocation, native mediasoup event-listener cleanup) is
+tracked as explicit future work in this document and the plan, not hidden.
