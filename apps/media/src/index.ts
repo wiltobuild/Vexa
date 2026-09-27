@@ -208,6 +208,33 @@ function iceCandidatesOf(transport: MediasoupTypes.WebRtcTransport) {
   }));
 }
 
+// Root cause of the `consume` hang: mediasoup's Router#rtpCapabilities is
+// NOT filtered to the kinds actually configured in `mediaCodecs` -- even for
+// this audio-only router, `headerExtensions` includes mediasoup's full
+// built-in extension list, which mixes `kind: 'audio'` and `kind: 'video'`
+// entries and commonly totals ~18 items. The frozen wire contract
+// (packages/shared/src/media.ts rtpCapabilitiesSchema) requires every
+// headerExtensions entry to have `kind: 'audio'` and caps the array at 16.
+// The client in this spike simply echoes the `join` response's
+// rtpCapabilities back verbatim as the `consume` request's rtpCapabilities
+// (see docs/tasks/audio-spike/plan.md and test/integration.test.ts), so the
+// raw router object failed schema validation on the way back in -- the
+// message was silently treated as malformed and the socket was closed with
+// no reply, which is indistinguishable from a hang to the client (it just
+// never got a response for that reqId). Filtering to audio-only extensions
+// here, once, keeps every downstream consumer of `join`'s response
+// (client's stored capabilities, and this server's own `canConsume` check
+// in handleConsume) working with a shape that satisfies the contract; the
+// audio codec itself is unaffected since only audio was ever configured.
+function audioOnlyRtpCapabilities(
+  caps: MediasoupTypes.RtpCapabilities,
+): MediasoupTypes.RtpCapabilities {
+  return {
+    ...caps,
+    headerExtensions: (caps.headerExtensions ?? []).filter((ext) => ext.kind === 'audio'),
+  };
+}
+
 async function handleJoin(peer: Peer, reqId: string, channelId: string) {
   if (peer.channelId !== null) {
     fail(peer, reqId, 409, 'Already joined');
@@ -248,7 +275,7 @@ async function handleJoin(peer: Peer, reqId: string, channelId: string) {
   }));
   broadcastToChannel(channelId, { type: 'peerJoined', payload: { userId: peer.userId } }, peer);
   reply(peer, reqId, {
-    rtpCapabilities: room.router.rtpCapabilities,
+    rtpCapabilities: audioOnlyRtpCapabilities(room.router.rtpCapabilities),
     existingProducers,
   });
 }
