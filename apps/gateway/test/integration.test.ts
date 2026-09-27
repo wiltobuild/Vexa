@@ -115,3 +115,10 @@ test('friend requests, DMs, and blocking close an existing DM both ways',{skip:p
  const merged=await request('/relationships/requests','POST',{username:carol.username},dave.cookie);assert.equal(merged.status,200);assert.deepEqual(await merged.json(),{status:'friend',id:carol.id});
 });
 
+
+
+test('API and gateway expose separate unauthenticated liveness and dependency readiness',{skip:process.env.VEXA_INTEGRATION!=='1'},async()=>{
+ for(const base of [api,(process.env.GATEWAY_URL??'ws://localhost:3002').replace(/^ws/,'http')]){
+  for(const path of ['/live','/ready']){const response=await fetch(base+path);assert.equal(response.status,200);assert.equal((await response.json() as {ok:boolean}).ok,true);}
+ }
+});

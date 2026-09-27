@@ -3,31 +3,30 @@ import {registerReactions} from './reactions.js';
 import {flushOutbox} from './outbox.js';
 import {registerRecall} from './recall.js';
 import Fastify from 'fastify';import cookie from '@fastify/cookie';import cors from '@fastify/cors';import rateLimit from '@fastify/rate-limit';import argon2 from 'argon2';import {randomBytes,createHash} from 'node:crypto';import {z,ZodError} from 'zod';
-import {Snowflake,registerSchema,credentialsSchema,guildSchema,channelSchema,messageSchema,editMessageSchema,snowflakeSchema,DEFAULT_PERMISSIONS,Permission,hasPermission,roleCreateSchema,roleUpdateSchema,banSchema,timeoutSchema,friendRequestSchema,dmCreateSchema} from '@vexa/shared';import {db,redis,requireChannel,requireGuild,publish} from './db.js';
+import {Snowflake,registerSchema,credentialsSchema,guildSchema,channelSchema,messageSchema,editMessageSchema,snowflakeSchema,DEFAULT_PERMISSIONS,Permission,hasPermission,roleCreateSchema,roleUpdateSchema,banSchema,timeoutSchema,friendRequestSchema,dmCreateSchema} from '@vexa/shared';import {db,redis,requireChannel,requireGuild,publish,config} from './db.js';
 declare module 'fastify' {interface FastifyRequest {userId:string}}
-// trustProxy: behind a reverse proxy/CDN (Vercel, Fly, Render, nginx), req.ip is otherwise the
-// proxy's own IP for every request, collapsing the per-IP rate limiter into one shared bucket
-// for all users. Set TRUST_PROXY to a specific hop count/CIDR list in production if the default
-// (trust the whole X-Forwarded-For chain) is too permissive for your deployment topology.
-const app=Fastify({logger:true,bodyLimit:32768,trustProxy:process.env.TRUST_PROXY!=='false'});const ids=new Snowflake(Number(process.env.WORKER_ID??1));const origin=process.env.WEB_ORIGIN??'http://localhost:5173';
-await app.register(cookie);await app.register(cors,{origin,credentials:true});await app.register(rateLimit,{redis,max:Number(process.env.API_RATE_LIMIT_MAX??120),timeWindow:'1 minute'});
+// Production proxy trust and environment values are validated before clients connect.
+const app=Fastify({logger:true,bodyLimit:32768,trustProxy:config.trustProxy});const ids=new Snowflake(config.workerId);const origin=config.webOrigin;
+await app.register(cookie);await app.register(cors,{origin,credentials:true});await app.register(rateLimit,{redis,max:config.apiRateLimit,timeWindow:'1 minute'});
 app.decorateRequest('userId','');
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 app.addHook('onRequest',async(req,reply)=>{
  if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.headers.origin!==origin)return reply.code(403).send({error:'Invalid request origin'});
- if(req.url==='/health'||req.url.startsWith('/auth/')||req.method==='OPTIONS')return;
+ if(['/health','/ready','/live'].includes(req.url)||req.url.startsWith('/auth/')||req.method==='OPTIONS')return;
  const token=req.cookies.vexa_session;if(!token)return reply.code(401).send({error:'Sign in required'});
  const {rows:[session]}=await db.query('SELECT user_id FROM sessions WHERE token_hash=$1 AND expires_at>now()',[hash(token)]);if(!session)return reply.code(401).send({error:'Session expired'});req.userId=session.user_id;
 });
 app.setErrorHandler((error,req,reply)=>{if(error instanceof ZodError)return reply.code(400).send({error:'Invalid request',issues:error.issues});const e=error as Error&{code?:string;statusCode?:number};if(e.code==='23505')return reply.code(409).send({error:'Already exists'});if(e.code==='23503')return reply.code(400).send({error:'Referenced resource does not exist'});if(e.statusCode&&e.statusCode<500)return reply.code(e.statusCode).send({error:e.message});req.log.error(error);return reply.code(503).send({error:'Service temporarily unavailable'});});
-async function createSession(userId:string,reply:import('fastify').FastifyReply){const token=randomBytes(32).toString('hex');await db.query("INSERT INTO sessions VALUES($1,$2,now()+interval '30 days')",[hash(token),userId]);reply.setCookie('vexa_session',token,{path:'/',httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'strict',maxAge:2592000});}
+async function createSession(userId:string,reply:import('fastify').FastifyReply){const token=randomBytes(32).toString('hex');await db.query("INSERT INTO sessions VALUES($1,$2,now()+interval '30 days')",[hash(token),userId]);reply.setCookie('vexa_session',token,{path:'/',httpOnly:true,secure:config.production,sameSite:'strict',maxAge:2592000});}
 const params=(value:unknown,key:string)=>snowflakeSchema.parse((value as Record<string,unknown>)[key]);
 registerReactions(app);
 registerPins(app);
+app.get('/live',async()=>({ok:true}));
+app.get('/ready',async()=>{await db.query('SELECT 1');await redis.ping();return {ok:true};});
 app.get('/health',async()=>{await db.query('SELECT 1');await redis.ping();return {ok:true};});
 // Default stays a strict 5/min against credential-stuffing/account-farming; override only for a
 // test harness that legitimately registers many accounts back to back (see ci.yml).
-app.post('/auth/register',{config:{rateLimit:{max:Number(process.env.AUTH_REGISTER_RATE_LIMIT_MAX??5),timeWindow:'1 minute'}}},async(req,reply)=>{const body=registerSchema.parse(req.body);const id=ids.next();await db.query('INSERT INTO users(id,email,username,password_hash) VALUES($1,$2,$3,$4)',[id,body.email,body.username,await argon2.hash(body.password,{type:argon2.argon2id})]);await createSession(id,reply);return reply.code(201).send({id,username:body.username,email:body.email});});
+app.post('/auth/register',{config:{rateLimit:{max:config.registerRateLimit,timeWindow:'1 minute'}}},async(req,reply)=>{const body=registerSchema.parse(req.body);const id=ids.next();await db.query('INSERT INTO users(id,email,username,password_hash) VALUES($1,$2,$3,$4)',[id,body.email,body.username,await argon2.hash(body.password,{type:argon2.argon2id})]);await createSession(id,reply);return reply.code(201).send({id,username:body.username,email:body.email});});
 app.post('/auth/login',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async(req,reply)=>{const body=credentialsSchema.parse(req.body);const {rows:[user]}=await db.query('SELECT * FROM users WHERE email=$1',[body.email]);if(!user||!await argon2.verify(user.password_hash,body.password))return reply.code(401).send({error:'Invalid credentials'});await createSession(user.id,reply);return {id:user.id,username:user.username,email:user.email,avatar_url:user.avatar_url,bio:user.bio};});
 app.post('/auth/logout',async(req,reply)=>{if(req.cookies.vexa_session)await db.query('DELETE FROM sessions WHERE token_hash=$1',[hash(req.cookies.vexa_session)]);reply.clearCookie('vexa_session',{path:'/'});return {ok:true};});
 app.get('/me',async(req)=>{const {rows:[user]}=await db.query('SELECT id,username,email,avatar_url,bio FROM users WHERE id=$1',[req.userId]);return user;});
@@ -176,5 +175,5 @@ let outboxStopped=false;let outboxTimer:ReturnType<typeof setTimeout>|undefined;
 function scheduleOutbox(delay=250){outboxTimer=setTimeout(()=>{pendingOutbox=flushOutbox(db,publish).then(()=>{if(!outboxStopped)scheduleOutbox();}).catch(error=>{app.log.error(error,'Outbox delivery failed; will retry');if(!outboxStopped)scheduleOutbox(5000);});},delay);outboxTimer.unref();}
 scheduleOutbox();app.addHook('onClose',async()=>{outboxStopped=true;clearTimeout(outboxTimer);await pendingOutbox;});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>void app.close().then(async()=>{await db.end();redis.disconnect();process.exit(0);}));
-await app.listen({port:Number(process.env.API_PORT??3001),host:process.env.HOST??'127.0.0.1'});
+await app.listen({port:config.apiPort,host:config.host});
 
