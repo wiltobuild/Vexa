@@ -102,3 +102,34 @@ one-line patch.
 freeze) then parallel dual-builder implementation (Track A/Sonnet:
 `apps/media` server; Track B/Codex: `apps/web` client integration).
 **Approved by**: user
+
+## 2026-09-27 — "Full auto" for the remainder of this task
+
+**Context**: User said "quit asking for approvals go full auto" mid-task,
+after the plan approval above. Applies to routine implementation
+mechanics for the audio-spike task already approved (commits, dispatching
+builder/reviewer agents, running verification commands) — not a blanket
+override of the global CLAUDE.md's harder stops (destructive actions,
+scope expansion, genuinely new architecture decisions not already covered
+by the approved plan).
+**Decision**: Proceeded through Phase 0/1/2 (contract freeze,
+dual-builder implementation, cross-review, fix passes) without further
+per-step confirmation.
+**Approved by**: user
+
+## 2026-09-27 — audio-spike implementation done; live verification blocked on host reboot
+
+**Context**: Both builder tracks (Track A: `apps/media` server; Track B:
+`apps/web` client) implemented, cross-reviewed by the other model, and
+fixed for all must-fix findings (3 for Track A, 2 for Track B). Full
+workspace typecheck/build/unit-tests pass. Docker Desktop's engine would
+not stay up on this host (recurring AF_UNIX socket crash, confirmed
+pre-existing from 2026-09-25 logs, not caused by this session) — blocking
+the plan's live two-browser audio verification and the
+`VEXA_INTEGRATION=1` test suites for `apps/media`/`apps/gateway`.
+**Decision**: User will reboot the host to clear the stuck OS-level socket
+state. Do not merge `feat/audio-spike` to `main` until Phase 3's live
+verification actually runs and passes — see
+`docs/tasks/audio-spike/verification.md` for the full status and exact
+next steps for whoever (or whichever future session) resumes this.
+**Approved by**: user
