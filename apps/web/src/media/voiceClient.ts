@@ -10,14 +10,16 @@ export type VoiceClientEvents={peerJoined:(userId:string)=>void;peerLeft:(userId
 
 // This keeps late-join producers and live producer events on one consume path.
 export async function consumeExistingAndSubscribe(existing:ProducerInfo[],subscribe:(listener:(producer:ProducerInfo)=>void)=>()=>void,consume:(producer:ProducerInfo)=>Promise<void>):Promise<()=>void>{
+ const unsubscribe=subscribe(producer=>{void consume(producer);});
  await Promise.all(existing.map(consume));
- return subscribe(producer=>{void consume(producer);});
+ return unsubscribe;
 }
 
 export class VoiceClient {
  private sendTransport!:Transport;
  private recvTransport!:Transport;
  private producer:Producer|null=null;
+ private stream:MediaStream|null=null;
  private readonly consumers=new Map<string,{consumer:Consumer;audio:HTMLAudioElement;userId:string;producerId:string}>();
  private readonly producerConsumers=new Map<string,string>();
  private unsubscribe=()=>{};
@@ -34,6 +36,7 @@ export class VoiceClient {
    client.listenForRoomEvents();
    client.unsubscribe=await consumeExistingAndSubscribe(joined.existingProducers,listener=>client.subscribeNewProducers(listener),producer=>client.consume(producer));
    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+   client.stream=stream;
    client.producer=await client.sendTransport.produce({track:stream.getAudioTracks()[0]});
    return client;
   }catch(error){signaling.close();throw error;}
@@ -63,7 +66,7 @@ export class VoiceClient {
  }
  setMuted(muted:boolean){if(this.producer)this.producer.pause?.();if(!muted)this.producer?.resume?.();}
  setDeafened(deafened:boolean){for(const {audio} of this.consumers.values())audio.muted=deafened;}
- async leave(){this.unsubscribe();try{await this.signaling.request('leave',{});}catch{}this.producer?.close();this.sendTransport?.close();this.recvTransport?.close();for(const id of [...this.consumers.keys()])this.removeConsumer(id);this.signaling.close();}
+ async leave(){this.unsubscribe();try{await this.signaling.request('leave',{});}catch{}this.producer?.close();this.stream?.getTracks().forEach(track=>track.stop());this.stream=null;this.sendTransport?.close();this.recvTransport?.close();for(const id of [...this.consumers.keys()])this.removeConsumer(id);this.signaling.close();}
  private removeConsumersForUser(userId:string){for(const [id,entry] of this.consumers)if(entry.userId===userId)this.removeConsumer(id);}
  private removeProducer(producerId:string){const consumerId=this.producerConsumers.get(producerId);if(consumerId)this.removeConsumer(consumerId);}
  private removeConsumer(consumerId:string){const entry=this.consumers.get(consumerId);if(!entry)return;entry.consumer.close();entry.audio.srcObject=null;this.consumers.delete(consumerId);this.producerConsumers.delete(entry.producerId);this.events.remoteAudioRemoved(consumerId);}
