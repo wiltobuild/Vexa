@@ -304,6 +304,57 @@ test(
   },
 );
 
+test(
+  'a duplicate consume request for the same producer is rejected, not a second native consumer',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const owner = await register();
+    const member = await register();
+    const guild = await createGuild(owner.cookie);
+    const voice = await createChannel(owner.cookie, guild.id, 'voice');
+    await inviteAndJoin(owner.cookie, guild.id, member.cookie);
+
+    const ownerPeer = await connectMedia(owner.cookie);
+    const memberPeer = await connectMedia(member.cookie);
+    try {
+      await ownerPeer.req('join', { channelId: voice.id });
+      const memberJoin = await memberPeer.req('join', { channelId: voice.id });
+      assert.equal(memberJoin.ok, true);
+
+      const sendTransport = await ownerPeer.req('createTransport', { direction: 'send' });
+      const transportId = (sendTransport.data as { transportId: string }).transportId;
+      await ownerPeer.req('connectTransport', { transportId, dtlsParameters: fakeDtlsParameters() });
+      const produced = await ownerPeer.req('produce', { transportId, kind: 'audio', rtpParameters: opusRtpParameters() });
+      assert.equal(produced.ok, true);
+      const producerId = (produced.data as { producerId: string }).producerId;
+
+      const recvTransport = await memberPeer.req('createTransport', { direction: 'recv' });
+      const recvTransportId = (recvTransport.data as { transportId: string }).transportId;
+      const rtpCapabilities = (memberJoin.data as { rtpCapabilities: unknown }).rtpCapabilities;
+
+      const firstConsume = await memberPeer.req('consume', { transportId: recvTransportId, producerId, rtpCapabilities });
+      assert.equal(firstConsume.ok, true);
+      const consumerId = (firstConsume.data as { consumerId: string }).consumerId;
+
+      // Same peer, same producer, second request: Finding 2 fix -- must be
+      // rejected as a duplicate rather than allocating an unbounded second
+      // native Consumer for the same (peer, producerId) pair.
+      const secondConsume = await memberPeer.req('consume', { transportId: recvTransportId, producerId, rtpCapabilities });
+      assert.equal(secondConsume.ok, false);
+      assert.equal(secondConsume.error?.code, 409);
+
+      // The original consumer is still the only one that works: resuming it
+      // must still succeed, proving the duplicate request never displaced or
+      // duplicated live state.
+      const resumed = await memberPeer.req('resumeConsumer', { consumerId });
+      assert.equal(resumed.ok, true);
+    } finally {
+      ownerPeer.ws.close();
+      memberPeer.ws.close();
+    }
+  },
+);
+
 test('media service exposes separate unauthenticated liveness and dependency readiness', { skip: process.env.VEXA_INTEGRATION !== '1' }, async () => {
   const base = mediaUrl.replace(/^ws/, 'http');
   for (const path of ['/live', '/ready']) {

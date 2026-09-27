@@ -230,6 +230,11 @@ async function handleJoin(peer: Peer, reqId: string, channelId: string) {
     return;
   }
   const room = await getOrCreateRoom(channelId);
+  // Finding 1 fix: the WS may have closed (and teardownPeer already run)
+  // while we were awaiting getOrCreateRoom above. Re-check before adding
+  // this peer to the room -- otherwise a torn-down peer gets an orphaned
+  // slot that nothing ever removes.
+  if (peer.torndown) return;
   if (room.peers.size >= MAX_PEERS_PER_ROUTER) {
     fail(peer, reqId, 429, 'Room full');
     return;
@@ -277,6 +282,13 @@ async function handleCreateTransport(peer: Peer, reqId: string, direction: 'send
     fail(peer, reqId, 500, 'Failed to create transport');
     return;
   }
+  // Finding 1 fix: teardownPeer may have run while we were awaiting
+  // createWebRtcTransport. Don't hand a torn-down peer a live transport that
+  // nothing will ever close.
+  if (peer.torndown) {
+    transport.close();
+    return;
+  }
   peer.transports.set(transport.id, { transport, direction });
   reply(peer, reqId, {
     transportId: transport.id,
@@ -303,6 +315,9 @@ async function handleConnectTransport(
     fail(peer, reqId, 500, 'Failed to connect transport');
     return;
   }
+  // Finding 1 fix: teardownPeer may have run mid-await; the transport is
+  // already closed in that case, so don't report success for it.
+  if (peer.torndown) return;
   reply(peer, reqId, {});
 }
 
@@ -340,6 +355,10 @@ async function handleProduce(
     }
     throw error;
   }
+  // Finding 1 fix: the requireChannel await above may have outlasted
+  // teardownPeer (e.g. the socket closed mid-check). Bail before touching
+  // room/registry state for a peer that no longer has a home.
+  if (peer.torndown) return;
   const room = channelRooms.get(peer.channelId);
   if (!room) {
     fail(peer, reqId, 404, 'Unknown transport/producer/consumer');
@@ -350,6 +369,13 @@ async function handleProduce(
     producer = await entry.transport.produce({ kind, rtpParameters });
   } catch (error) {
     fail(peer, reqId, 500, 'Failed to produce');
+    return;
+  }
+  // Finding 1 fix: same race, this time across the transport.produce()
+  // await -- if the peer was torn down while that was in flight, close the
+  // freshly-created producer instead of inserting it into any map/registry.
+  if (peer.torndown) {
+    producer.close();
     return;
   }
   peer.producers.set(producer.id, producer);
@@ -399,12 +425,41 @@ async function handleConsume(
     fail(peer, reqId, 400, 'Cannot consume');
     return;
   }
+  // Finding 2 fix: cap consumers at one per (peer, producerId) -- otherwise a
+  // joined peer can call `consume` for the same producer repeatedly and grow
+  // an unbounded number of native Consumers (the existing rate limit only
+  // bounds allocation *rate*, not total count). Mirrors the plan's other
+  // explicit per-peer/per-producer caps (409-style rejection).
+  for (const existing of peer.consumers.values()) {
+    if (existing.producerId === producerId) {
+      fail(peer, reqId, 409, 'Already consuming this producer');
+      return;
+    }
+  }
   let consumer: MediasoupTypes.Consumer;
   try {
     consumer = await entry.transport.consume({ producerId, rtpCapabilities, paused: true });
   } catch (error) {
     fail(peer, reqId, 500, 'Failed to consume');
     return;
+  }
+  // Finding 1 fix: re-check after the consume() await -- if teardownPeer ran
+  // while we awaited, close the freshly-created consumer instead of handing
+  // it to a peer/registry that no longer exists.
+  if (peer.torndown) {
+    consumer.close();
+    return;
+  }
+  // Finding 2 fix (race companion): another `consume` for the same
+  // producerId may have completed and been inserted while this one awaited
+  // transport.consume() above -- re-check right before inserting so two
+  // concurrent requests can't both win the race and leave two consumers.
+  for (const existing of peer.consumers.values()) {
+    if (existing.producerId === producerId && existing.id !== consumer.id) {
+      consumer.close();
+      fail(peer, reqId, 409, 'Already consuming this producer');
+      return;
+    }
   }
   peer.consumers.set(consumer.id, consumer);
   reply(peer, reqId, {
@@ -557,11 +612,22 @@ server.on('upgrade', (req, socket, head) => {
 const sweepTimer = setInterval(() => {
   for (const peer of allPeers) {
     if (peer.torndown) continue;
-    void sessionStillValid(peer.tokenHash, peer.userId).then((valid) => {
-      if (valid || peer.torndown) return;
-      peer.ws.close(4001, 'Session expired');
-      teardownPeer(peer);
-    });
+    void sessionStillValid(peer.tokenHash, peer.userId)
+      .then((valid) => {
+        if (valid || peer.torndown) return;
+        peer.ws.close(4001, 'Session expired');
+        teardownPeer(peer);
+      })
+      .catch((error) => {
+        // Finding 3 fix: a transient DB failure here must not become an
+        // unhandled rejection (which can crash the process under Node's
+        // default behavior) and must not force-close a peer on a false
+        // positive -- just log and skip this peer for this sweep iteration.
+        console.error(
+          'Session sweep check failed, skipping this peer for this iteration',
+          error instanceof Error ? error.message : 'unknown',
+        );
+      });
   }
 }, 30000);
 
