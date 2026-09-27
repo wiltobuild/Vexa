@@ -49,7 +49,7 @@ All IDs are decimal strings. Content is plain text; clients must render it as te
 
 **Role and moderation permissions never let a non-owner escalate.** Creating/editing a role, or granting one to a member, is rejected with 403 unless every bit in the requested `permissions` is already held by the actor (owner bypasses this, matching `ALL_PERMISSIONS`). So `MANAGE_GUILD` alone is not a path to self-granted `ADMINISTRATOR` or any other bit the actor doesn't hold — see `guildPermissions`/`requireGuild` in `apps/api/src/db.ts`.
 
-The API trusts `X-Forwarded-For` by default (`trustProxy`, see `.env.example`'s `TRUST_PROXY`) so the per-IP rate limiter doesn't collapse into one shared bucket behind a reverse proxy/CDN; set `TRUST_PROXY=false` only when the API is reachable directly with no proxy in front.
+The API does not trust forwarded client-IP headers by default. Set `TRUST_PROXY` to the actual proxy addresses/CIDRs (comma-separated) when deployed behind a reverse proxy. Production rejects blanket `true`, development database credentials, missing service URLs/origin/worker ID, and elevated test rate limits. See [foundation operations](FOUNDATIONS.md).
 
 ## Gateway v1
 

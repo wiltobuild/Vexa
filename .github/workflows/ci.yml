@@ -47,6 +47,10 @@ jobs:
           AUTH_REGISTER_RATE_LIMIT_MAX: '100'
           # All synthetic accounts share one runner IP across the API and browser suites.
           API_RATE_LIMIT_MAX: '1000'
+      - name: Migration upgrade and API integration
+        run: pnpm --filter @vexa/api test
+        env:
+          VEXA_INTEGRATION: '1'
       - name: API and gateway integration
         run: pnpm --filter @vexa/gateway test
         env:

@@ -1,0 +1,33 @@
+import {test,expect} from '@playwright/test';
+
+test('voice rooms stay separate from history and all Recall modes share top navigation',async({page})=>{
+ await page.goto('/');await page.evaluate(()=>localStorage.clear());await page.reload();
+ await page.getByRole('button',{name:'The Lounge 3',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'The Lounge',exact:true,level:1})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Join voice',exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Sample showcase',exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:'AFK',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'AFK',exact:true,level:1})).toBeVisible();
+ await page.getByRole('button',{name:/Voice history Never/}).click();
+ const modes=page.locator('.recall-tabs');
+ await expect(modes.getByRole('button')).toHaveText(['Sample showcase','AI summary','Try my microphone']);
+ await expect(modes.getByRole('button',{name:'Sample showcase',exact:true})).toHaveAttribute('aria-pressed','true');
+ expect(await page.locator('.recall').evaluate(node=>node.firstElementChild?.classList.contains('recall-tabs'))).toBe(true);
+ await modes.getByRole('button',{name:'AI summary',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Democracy Was Not Successfully Managed',exact:true})).toBeVisible();
+ await page.getByRole('group',{name:'Past summaries'}).getByRole('button',{name:/Thursday ranked grind/}).click();
+ await expect(page.getByRole('heading',{name:'One More Queue Became Five',exact:true})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'Half a Second to Spare',exact:true})).toBeVisible();
+ await page.getByRole('group',{name:'Past summaries'}).getByRole('button',{name:/Tuesday building club/}).click();
+ await expect(page.getByRole('heading',{name:'A Cozy Cabin, Eventually',exact:true})).toBeVisible();
+ await expect(page.locator('.recap-session-meta')).toContainText('3 participants');
+ await page.setViewportSize({width:390,height:844});
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await modes.getByRole('button',{name:'Try my microphone',exact:true}).click();
+ await expect(modes.getByRole('button',{name:'Try my microphone',exact:true})).toHaveAttribute('aria-pressed','true');
+ expect(await page.locator('.recall').evaluate(node=>node.firstElementChild?.classList.contains('recall-tabs'))).toBe(true);
+ await page.getByRole('button',{name:'Toggle channels'}).click();await page.getByRole('button',{name:'Ranked Grind',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Ranked Grind',exact:true,level:1})).toBeVisible();
+ await page.getByRole('button',{name:'Toggle channels'}).click();await page.getByRole('button',{name:/Voice history Never/}).click();
+ await expect(modes.getByRole('button',{name:'Sample showcase',exact:true})).toHaveAttribute('aria-pressed','true');
+});

@@ -45,7 +45,7 @@ pnpm dev:all
 
 PowerShell: use `Copy-Item .env.example .env` in place of `cp` if preferred.
 
-The database is initialized automatically on a fresh Compose volume. The migration command is idempotent. API: port 3001; gateway: 3002; web: 5173. Vite proxies `/api` and `/gateway` to keep cookies same-origin. The browser origin must exactly match `WEB_ORIGIN`; use `127.0.0.1`, not `localhost`, with the included configuration. Local infrastructure ports bind only to loopback. MinIO is provisioned for the future upload pipeline; uploads are not wired to it yet.
+Run `pnpm db:migrate` on both fresh and existing databases. Versioned migrations are locked, transactional and checksum-verified; repeated runs are no-ops. See [migration and configuration operations](docs/FOUNDATIONS.md). API: port 3001; gateway: 3002; web: 5173. Vite proxies `/api` and `/gateway` to keep cookies same-origin. The browser origin must exactly match `WEB_ORIGIN`; use `127.0.0.1`, not `localhost`, with the included configuration. Local infrastructure ports bind only to loopback. MinIO is provisioned for the future upload pipeline; uploads are not wired to it yet.
 
 Create an account using a password of at least 12 characters, create a server, and send a message. The demo and connected accounts never share message data.
 
@@ -86,6 +86,8 @@ docs           Architecture, timeline-free gates, feature design, asset provenan
 ```
 
 ## Design and next gates
+
+Track implementation in [delivery status](docs/DELIVERY-STATUS.md). Start with the [professional delivery plan](docs/PROFESSIONAL-DELIVERY-PLAN.md): audited status, 12 phases, dependencies, acceptance gates, operating targets and release handoff.
 
 See [backend contracts](docs/BACKEND.md), [timeline-free build gates](docs/ROADMAP.md), [voice transcription design](docs/VOICE-RECALL.md), and [asset attribution](docs/ASSETS.md).
 

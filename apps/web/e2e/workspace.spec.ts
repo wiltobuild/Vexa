@@ -11,7 +11,7 @@ test('creates a server, sends a message, edits, pins, and retains it on reload',
 });
 test('searches messages, opens voice history, and filters the sample transcript',async({page})=>{
  await page.getByRole('textbox',{name:'Search Vexa'}).fill('dialing');await expect(page.locator('.search-results')).toContainText('Anyone down');await page.getByRole('button',{name:'Close search',exact:true}).last().click();
- await page.getByRole('button',{name:/Voice history/}).click();await expect(page.getByText('Sample transcript · Preview')).toBeVisible();await page.getByPlaceholder('Search this conversation').fill('rotate');await expect(page.locator('.transcript-line')).toHaveCount(1);
+ await page.getByRole('button',{name:/Voice history/}).click();await page.getByRole('button',{name:'Sample showcase',exact:true}).click();await expect(page.getByText('Sample transcript · Preview')).toBeVisible();await page.getByPlaceholder('Search this conversation').fill('rotate');await expect(page.locator('.transcript-line')).toHaveCount(1);
 });
 test('escapes HTML in messages and confirms deletion',async({page})=>{
  await page.getByRole('textbox',{name:'Message',exact:true}).fill('<img src=x onerror="window.pwned=1">');await page.getByRole('button',{name:'Send message',exact:true}).click();

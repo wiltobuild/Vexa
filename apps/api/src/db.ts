@@ -1,6 +1,8 @@
+import {readConfig} from './config.js';
+export const config=readConfig(process.env);
 import pg from 'pg';import {Redis} from 'ioredis';import {permissionsFor,hasPermission,Permission,ALL_PERMISSIONS} from '@vexa/shared';
-export const db=new pg.Pool({connectionString:process.env.DATABASE_URL??'postgres://vexa:vexa_local_only@localhost:5432/vexa',max:20});
-export const redis=new Redis(process.env.REDIS_URL??'redis://localhost:6379');
+export const db=new pg.Pool({connectionString:config.databaseUrl,max:20});
+export const redis=new Redis(config.redisUrl);
 const forbid=(message:string)=>Object.assign(new Error(message),{statusCode:403});
 // Guild-level permissions: the union of the @everyone role (id===guildId, see guild creation)
 // and every role granted to this member, with no channel overwrites in play. Used for
