@@ -133,3 +133,37 @@ verification actually runs and passes — see
 `docs/tasks/audio-spike/verification.md` for the full status and exact
 next steps for whoever (or whichever future session) resumes this.
 **Approved by**: user
+
+## 2026-09-28 — audio-spike merged after live verification + real fake-device audio proof
+
+**Context**: Post-reboot, Docker's actual fix was disabling `EnableDockerAI`
+(not the reboot alone). With the stack live, found and fixed 2 more real
+bugs (missing `.dockerignore` breaking the `apps/media` Docker build; a
+`consume`-hang from mediasoup's router capabilities exceeding the frozen
+schema). Closed the plan's real audio-packet gap with a genuine Playwright
+fake-device e2e test (`--use-fake-device-for-media-stream`), independently
+reproduced and cross-reviewed. CI initially failed because the new e2e
+test wasn't gated for `apps/media`'s absence in CI — fixed with a
+reachability check.
+**Decision**: Merged `feat/audio-spike` to `main` (PR #16,
+commit `8718235`). All acceptance criteria proven live, including the
+spike's own core exit gate.
+**Approved by**: user
+
+## 2026-09-28 — device-network-handling task, full auto
+
+**Context**: User: "start the next task for phase 6 device/network
+handling, do everything, dont stop." Extends the already-approved
+`apps/media`/mediasoup architecture (not a new architecture decision) —
+proceeded plan → dual-builder implementation → cross-review → fix passes →
+live verification → merge without intermediate approval stops, per the
+user's explicit instruction. Added `restartIce` request/response and a
+`serverShuttingDown` event to the frozen contract (mechanical, reviewed
+extension, not a new architecture decision).
+**Decision**: Proceeding end-to-end per the user's instruction; see
+`docs/tasks/device-network-handling/verification.md` for full live
+verification results, including 2 more real bugs found during Apollo's
+pass (a test-coverage regression where Track B replaced rather than added
+a test, and a real Playwright exact-text-match failure) beyond the 3 found
+during builder cross-review (1 Track A, 2 Track B).
+**Approved by**: user (standing "go full auto" instruction)
