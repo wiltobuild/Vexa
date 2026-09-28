@@ -1,6 +1,6 @@
 import {readConfig} from './config.js';
 export const config=readConfig(process.env);
-import pg from 'pg';import {Redis} from 'ioredis';import {permissionsFor,hasPermission,Permission,ALL_PERMISSIONS} from '@vexa/shared';
+import pg from 'pg';import {Redis} from 'ioredis';import {createHash} from 'node:crypto';import {permissionsFor,hasPermission,Permission,ALL_PERMISSIONS} from '@vexa/shared';
 export const db=new pg.Pool({connectionString:config.databaseUrl,max:20});
 export const redis=new Redis(config.redisUrl);
 const forbid=(message:string)=>Object.assign(new Error(message),{statusCode:403});
@@ -42,6 +42,29 @@ export async function channelPermissions(userId:string,channelId:string){
  return {bits,channel};
 }
 export async function requireChannel(userId:string,channelId:string,permission:bigint=Permission.VIEW_CHANNEL){const result=await channelPermissions(userId,channelId);if(!result.channel||!hasPermission(result.bits,permission|Permission.VIEW_CHANNEL))throw Object.assign(new Error('Channel access denied'),{statusCode:403});return result;}
+// Shared session-cookie authentication, extracted from what the gateway previously inlined
+// (apps/gateway/src/index.ts) so a second WS-based consumer (apps/media) doesn't duplicate the
+// same hash-and-lookup a third time. Hashes the raw `vexa_session` cookie value and checks it
+// against a live, unexpired session row. Returns null (never throws) on any failure so callers
+// can decide their own rejection response (HTTP 401 close vs. WS close code).
+export function extractSessionCookie(cookieHeader:string|undefined):string|null{
+ const token=cookieHeader?.split(';').map(s=>s.trim()).find(s=>s.startsWith('vexa_session='))?.slice(13);
+ return token||null;
+}
+export async function authenticateSession(cookieHeader:string|undefined):Promise<{userId:string;tokenHash:string}|null>{
+ const token=extractSessionCookie(cookieHeader);
+ if(!token)return null;
+ const tokenHash=createHash('sha256').update(token).digest('hex');
+ const {rows:[session]}=await db.query('SELECT user_id FROM sessions WHERE token_hash=$1 AND expires_at>now()',[tokenHash]);
+ if(!session)return null;
+ return {userId:session.user_id,tokenHash};
+}
+// Re-verifies a session that was already resolved to a (tokenHash,userId) pair (e.g. on every
+// signaling request, or a periodic sweep), without re-parsing the cookie. Mirrors the gateway's
+// own `authorized()` re-check pattern.
+export async function sessionStillValid(tokenHash:string,userId:string):Promise<boolean>{
+ return Boolean((await db.query('SELECT 1 FROM sessions WHERE token_hash=$1 AND user_id=$2 AND expires_at>now()',[tokenHash,userId])).rowCount);
+}
 // One Redis transaction establishes a total ordering shared by every gateway node.
 export async function publish(type:string,channelId:string,data:unknown){await redis.eval("local s=redis.call('INCR','vexa:seq'); local e=cjson.decode(ARGV[1]); e.s=s; local payload=cjson.encode(e); redis.call('XADD','vexa:events','MAXLEN','~',10000,s..'-0','event',payload); redis.call('PUBLISH','vexa:dispatch',payload); return s",0,JSON.stringify({op:3,t:type,channelId,d:data}));}
 

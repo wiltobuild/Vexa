@@ -5,7 +5,7 @@
   "packageManager": "pnpm@11.19.0",
   "scripts": {
     "dev": "pnpm --filter @vexa/web dev",
-    "dev:all": "pnpm -r --parallel dev",
+    "dev:all": "pnpm --filter '!@vexa/media' -r --parallel dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",

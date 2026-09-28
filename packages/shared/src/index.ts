@@ -20,7 +20,8 @@ export class Snowflake {
  constructor(private worker=0,private clock:()=>number=Date.now){if(worker<0||worker>1023||!Number.isInteger(worker))throw new Error('Invalid worker ID');}
  next():string {const now=BigInt(this.clock())-EPOCH;if(now<0n||now<this.last)throw new Error('Clock moved backwards');if(now===this.last){this.sequence++;if(this.sequence>4095n)throw new Error('Snowflake capacity exceeded this millisecond');}else this.sequence=0n;this.last=now;return ((now<<22n)|(BigInt(this.worker)<<12n)|this.sequence).toString();}
 }
-export const snowflakeSchema=z.string().regex(/^\d{1,20}$/).refine(v=>BigInt(v)<=9223372036854775807n);
+export {snowflakeSchema} from './snowflake-schema.js';
+import {snowflakeSchema} from './snowflake-schema.js';
 export const credentialsSchema=z.object({email:z.string().email().max(254).transform(v=>v.toLowerCase()),password:z.string().min(12).max(128)});
 export const registerSchema=credentialsSchema.extend({username:z.string().trim().min(2).max(32).regex(/^[\w .-]+$/)});
 export const messageSchema=z.object({content:z.string().trim().min(1).max(4000),nonce:z.string().uuid(),replyTo:snowflakeSchema.optional()});
@@ -42,3 +43,4 @@ export const gatewayInputSchema=z.discriminatedUnion('op',[
  z.object({op:z.literal(7),d:z.object({channels:z.array(snowflakeSchema).max(100)})})
 ]);
 export type Dispatch={op:3;s:number;t:string;channelId:string;d:unknown};
+export * from './media.js';

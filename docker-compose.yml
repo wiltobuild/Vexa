@@ -31,6 +31,29 @@ services:
       MINIO_ROOT_PASSWORD: vexa_local_storage_only
     ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
     volumes: ["minio-data:/data"]
+  media:
+    build:
+      context: .
+      dockerfile: apps/media/Dockerfile
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://vexa:vexa_local_only@postgres:5432/vexa
+      REDIS_URL: redis://redis:6379
+      WEB_ORIGIN: http://127.0.0.1:5173
+      HOST: 0.0.0.0
+      MEDIA_PORT: "3003"
+      MEDIASOUP_ANNOUNCED_ADDRESS: 127.0.0.1
+      MEDIASOUP_RTC_MIN_PORT: "40000"
+      MEDIASOUP_RTC_MAX_PORT: "40099"
+    ports:
+      - "127.0.0.1:3003:3003"
+      - "127.0.0.1:40000-40099:40000-40099/udp"
+      - "127.0.0.1:40000-40099:40000-40099/tcp"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 volumes:
   postgres-data:
   redis-data:
