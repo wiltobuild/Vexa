@@ -89,6 +89,16 @@ export const mediaRequestSchema = z.discriminatedUnion('type', [
   // the whole call down. Ownership: resolved via the requesting peer's own
   // transports map, same tier-1 rule as connectTransport/produce/consume.
   z.object({ reqId: z.string().uuid(), type: z.literal('restartIce'), payload: z.object({ transportId: z.string().uuid() }) }),
+  // participant-limits-and-moderation addition: guild MODERATE_MEMBERS only
+  // (checked via requireGuild against the target channel's guild_id, not
+  // the tier-1 per-peer ownership rule the ops above use -- a moderator
+  // acts on ANOTHER peer's connection, which is exactly what tier-1
+  // ownership exists to prevent for everyone else). The server resolves
+  // targetUserId to a connected Peer within that channel's room; unknown
+  // target -> 404, same error shape as every other "doesn't exist" case in
+  // this contract.
+  z.object({ reqId: z.string().uuid(), type: z.literal('moderatorSetMute'), payload: z.object({ channelId: snowflakeSchema, targetUserId: snowflakeSchema, muted: z.boolean() }) }),
+  z.object({ reqId: z.string().uuid(), type: z.literal('moderatorDisconnect'), payload: z.object({ channelId: snowflakeSchema, targetUserId: snowflakeSchema }) }),
 ]);
 export type MediaRequest = z.infer<typeof mediaRequestSchema>;
 
@@ -121,6 +131,8 @@ export const leaveResponseSchema = z.object({});
 export const restartIceResponseSchema = z.object({
   iceParameters: z.object({ usernameFragment: z.string(), password: z.string(), iceLite: z.boolean().optional() }),
 });
+export const moderatorSetMuteResponseSchema = z.object({});
+export const moderatorDisconnectResponseSchema = z.object({});
 
 export const mediaResponseSchema = z.discriminatedUnion('ok', [
   z.object({ reqId: z.string().uuid(), ok: z.literal(true), data: z.unknown() }),
@@ -139,6 +151,20 @@ export const mediaEventSchema = z.discriminatedUnion('type', [
   // can show a clear "server restarting" state and attempt reconnection
   // instead of seeing an unexplained abrupt close.
   z.object({ type: z.literal('serverShuttingDown'), payload: z.object({}) }),
+  // participant-limits-and-moderation addition: broadcast to every peer in
+  // the room (including the muted participant themselves, who uses this to
+  // lock their own mute toggle rather than a separate targeted event --
+  // simpler than adding a second event type for the same fact). Only
+  // covers moderator-initiated mutes in this pass; self-mute stays a
+  // purely client-side producer.pause() with no server round-trip, as it
+  // already was before this addition -- reconciling self-mute broadcast to
+  // other participants is explicitly out of scope (see plan.md).
+  z.object({ type: z.literal('participantMuted'), payload: z.object({ userId: snowflakeSchema, muted: z.boolean() }) }),
+  // Sent only to the removed peer's own socket, immediately before the
+  // server closes it -- lets the client show "removed by a moderator"
+  // instead of a generic connection-lost state. Everyone else in the room
+  // still gets the existing peerLeft broadcast.
+  z.object({ type: z.literal('removedByModerator'), payload: z.object({}) }),
 ]);
 export type MediaEvent = z.infer<typeof mediaEventSchema>;
 
