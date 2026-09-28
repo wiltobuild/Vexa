@@ -3,12 +3,12 @@ import type {Consumer,Producer,Transport,TransportOptions,RtpCapabilities,RtpPar
 import {MediaSignaling,type MediaEvent} from './signaling';
 
 type ProducerInfo={producerId:string;userId:string;kind:'audio'};
-type JoinResponse={rtpCapabilities:RtpCapabilities;existingProducers:ProducerInfo[]};
+type JoinResponse={rtpCapabilities:RtpCapabilities;existingProducers:ProducerInfo[];mutedParticipants:string[]};
 type TransportResponse={transportId:string;iceParameters:TransportOptions['iceParameters'];iceCandidates:TransportOptions['iceCandidates'];dtlsParameters:TransportOptions['dtlsParameters']};
 type ConsumeResponse={consumerId:string;producerId:string;kind:'audio';rtpParameters:RtpParameters};
 type RestartIceResponse={iceParameters:TransportOptions['iceParameters']};
 export type VoiceState='connected'|'listen-only'|'microphone-disconnected'|'reconnecting'|'server-restarting'|'reconnect-failed'|'removed-by-moderator';
-export type VoiceClientEvents={peerJoined:(userId:string)=>void;peerLeft:(userId:string)=>void;remoteAudio:(audio:HTMLAudioElement,userId:string)=>void;remoteAudioRemoved:(consumerId:string)=>void;participantMuted?:(userId:string,muted:boolean)=>void;stateChanged?:(state:VoiceState)=>void};
+export type VoiceClientEvents={peerJoined:(userId:string)=>void;peerLeft:(userId:string)=>void;remoteAudio:(audio:HTMLAudioElement,userId:string)=>void;remoteAudioRemoved:(consumerId:string)=>void;participantMuted?:(userId:string,muted:boolean)=>void;mutedParticipants?:(userIds:string[])=>void;stateChanged?:(state:VoiceState)=>void};
 
 export const MAX_RECONNECT_ATTEMPTS=5;
 export const reconnectDelay=(attempt:number)=>Math.min(500*2**attempt,8000);
@@ -28,7 +28,7 @@ export class VoiceClient {
  private setState(state:VoiceState){this.events.stateChanged?.(state);}
  private async establish():Promise<'connected'|'listen-only'>{
   this.intentionalClose=false;this.signaling=await MediaSignaling.connect(this.url);
-  try {const joined=await this.signaling.request<JoinResponse>('join',{channelId:this.channelId});this.device=new Device();await this.device.load({routerRtpCapabilities:joined.rtpCapabilities});await this.createTransports();this.listenForRoomEvents();this.unsubscribe=await consumeExistingAndSubscribe(joined.existingProducers,l=>this.subscribeNewProducers(l),p=>this.consume(p));this.unsubscribeClose=this.signaling.onClose(()=>{if(!this.intentionalClose)this.startReconnect(false);});let state:'connected'|'listen-only'='listen-only';await finishJoinWithMicrophone(navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices),async stream=>{await this.attachMicrophone(stream,false);state='connected';},()=>{state='listen-only';});return state;}
+  try {const joined=await this.signaling.request<JoinResponse>('join',{channelId:this.channelId});this.device=new Device();await this.device.load({routerRtpCapabilities:joined.rtpCapabilities});await this.createTransports();this.listenForRoomEvents();this.unsubscribe=await consumeExistingAndSubscribe(joined.existingProducers,l=>this.subscribeNewProducers(l),p=>this.consume(p));this.unsubscribeClose=this.signaling.onClose(()=>{if(!this.intentionalClose)this.startReconnect(false);});let state:'connected'|'listen-only'='listen-only';await finishJoinWithMicrophone(navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices),async stream=>{await this.attachMicrophone(stream,false);state='connected';},()=>{state='listen-only';});this.events.mutedParticipants?.(joined.mutedParticipants);return state;}
   catch(error){this.cleanup(true);throw error;}
  }
  private async createTransports(){const send=await this.signaling.request<TransportResponse>('createTransport',{direction:'send'});this.sendTransport=this.device.createSendTransport({id:send.transportId,iceParameters:send.iceParameters,iceCandidates:send.iceCandidates,dtlsParameters:send.dtlsParameters});this.wireTransport(this.sendTransport);this.sendTransport.on('produce',({kind,rtpParameters},callback,errback)=>{void this.signaling.request<{producerId:string}>('produce',{transportId:this.sendTransport.id,kind,rtpParameters}).then(({producerId})=>callback({id:producerId})).catch(errback);});const recv=await this.signaling.request<TransportResponse>('createTransport',{direction:'recv'});this.recvTransport=this.device.createRecvTransport({id:recv.transportId,iceParameters:recv.iceParameters,iceCandidates:recv.iceCandidates,dtlsParameters:recv.dtlsParameters});this.wireTransport(this.recvTransport);}

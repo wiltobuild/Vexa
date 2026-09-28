@@ -1,7 +1,7 @@
 import {describe,expect,it,vi} from 'vitest';
 import {MediaRequestError,MediaSignaling} from './signaling';
 import {consumeExistingAndSubscribe,finishJoinWithMicrophone,nextReconnectDelay,reconnectDelay,VoiceClient} from './voiceClient';
-import {isMutedByModerator,reconcileParticipantMuted,reconcileVoiceOccupancy} from './voiceModeration';
+import {isMutedByModerator,reconcileMutedParticipants,reconcileParticipantMuted,reconcileVoiceOccupancy} from './voiceModeration';
 
 class MockSocket extends EventTarget {
  static readonly OPEN=1;
@@ -98,6 +98,11 @@ describe('voice moderation state reconciliation',()=>{
   muted=reconcileParticipantMuted(muted,'two',false);
   expect(isMutedByModerator(muted,'one')).toBe(true);
   expect(isMutedByModerator(muted,'two')).toBe(false);
+ });
+ it('replaces stale state with the muted participants from a join response',()=>{
+  const muted=reconcileMutedParticipants(['self','one']);
+  expect(muted).toEqual({self:true,one:true});
+  expect(isMutedByModerator(muted,'stale')).toBe(false);
  });
 });
 
