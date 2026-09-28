@@ -1,6 +1,7 @@
 import {describe,expect,it,vi} from 'vitest';
 import {MediaRequestError,MediaSignaling} from './signaling';
 import {consumeExistingAndSubscribe,finishJoinWithMicrophone,nextReconnectDelay,reconnectDelay,VoiceClient} from './voiceClient';
+import {isMutedByModerator,reconcileParticipantMuted,reconcileVoiceOccupancy} from './voiceModeration';
 
 class MockSocket extends EventTarget {
  static readonly OPEN=1;
@@ -80,5 +81,31 @@ describe('device and reconnect resilience',()=>{
    expect(internals.cleanup).toHaveBeenCalledTimes(3);
    expect(stateChanged).not.toHaveBeenCalledWith('connected');
   } finally {vi.useRealTimers();}
+ });
+});
+
+describe('voice moderation state reconciliation',()=>{
+ it('locks local self-unmute while server-muted and restores it when released',()=>{
+  let muted:Record<string,boolean>={};
+  muted=reconcileParticipantMuted(muted,'self',true);
+  expect(isMutedByModerator(muted,'self')).toBe(true);
+  muted=reconcileParticipantMuted(muted,'self',false);
+  expect(isMutedByModerator(muted,'self')).toBe(false);
+ });
+ it('tracks moderator mute state for other participants independently',()=>{
+  let muted:Record<string,boolean>={};
+  muted=reconcileParticipantMuted(muted,'one',true);
+  muted=reconcileParticipantMuted(muted,'two',false);
+  expect(isMutedByModerator(muted,'one')).toBe(true);
+  expect(isMutedByModerator(muted,'two')).toBe(false);
+ });
+});
+
+describe('voice occupancy state reconciliation',()=>{
+ it('updates occupancy by channel without replacing other visible channels',()=>{
+  let occupancy=reconcileVoiceOccupancy({},'voice-one',2);
+  occupancy=reconcileVoiceOccupancy(occupancy,'voice-two',1);
+  occupancy=reconcileVoiceOccupancy(occupancy,'voice-one',0);
+  expect(occupancy).toEqual({'voice-one':0,'voice-two':1});
  });
 });
