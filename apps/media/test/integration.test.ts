@@ -1,10 +1,22 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { WebSocket } from 'ws';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { redis as apiRedis } from '@vexa/api/db';
+
+// Importing @vexa/api/db (for the occupancy test's redis.duplicate() below)
+// pulls in its module-scope `redis = new Redis(...)` and `db = new
+// pg.Pool(...)` singletons, which open real sockets immediately and would
+// otherwise keep this test process's event loop alive forever after the
+// last test finishes (unlike everything else in this file, which only ever
+// talks to apps/api/apps/media over fetch/WS, never opens a handle that
+// outlives an individual test). Release them once, after the whole suite.
+after(() => {
+  apiRedis.disconnect();
+});
 
 // Real Postgres/Redis + a live apps/api + apps/media, per apps/gateway's own
 // integration-test convention (see apps/gateway/test/integration.test.ts).
@@ -83,8 +95,8 @@ function fakeDtlsParameters() {
 
 type Envelope = { reqId?: string; ok?: boolean; data?: unknown; error?: { code: number; message: string }; type?: string; payload?: unknown };
 
-async function connectMedia(cookie: string) {
-  const ws = new WebSocket(mediaUrl, { headers: { Cookie: cookie, Origin: origin } });
+async function connectMedia(cookie: string, url = mediaUrl) {
+  const ws = new WebSocket(url, { headers: { Cookie: cookie, Origin: origin } });
   const messages: Envelope[] = [];
   ws.on('message', (data) => messages.push(JSON.parse(data.toString())));
   await new Promise<void>((resolve, reject) => {
@@ -112,6 +124,112 @@ async function connectMedia(cookie: string) {
     throw new Error(`Timed out waiting for event ${type}`);
   }
   return { ws, req, waitEvent };
+}
+
+// voice-moderation-occupancy: the shared, already-running apps/media
+// instance (started by docker compose) never sets MEDIA_TEST_DEBUG, so it
+// never exposes the /__test/producer-paused introspection endpoint added in
+// src/index.ts (inert by default, for exactly this reason -- see that
+// endpoint's own comment). The moderatorSetMute test below needs a live
+// read of the real mediasoup Producer.paused flag to prove the mute
+// actually did something server-side, not just that the request replied
+// ok:true, so it spawns its own short-lived scratch instance with that flag
+// set -- same technique (and same rationale: index.ts is a run-on-import
+// script with no module boundary to import internals from directly) as the
+// existing SIGTERM graceful-shutdown test below.
+async function startScratchMediaInstance(
+  port: number,
+  rtcMin: number,
+  rtcMax: number,
+  extraEnv: Record<string, string> = {},
+): Promise<{ child: ChildProcess; url: string; wsUrl: string; stderr: () => string }> {
+  const mediaDir = path.resolve(fileURLToPath(import.meta.url), '../..');
+  const tsxBin = path.join(mediaDir, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.CMD' : 'tsx');
+  const child = spawn(tsxBin, ['src/index.ts'], {
+    cwd: mediaDir,
+    shell: process.platform === 'win32',
+    env: {
+      ...process.env,
+      HOST: '127.0.0.1',
+      MEDIA_PORT: String(port),
+      MEDIASOUP_RTC_MIN_PORT: String(rtcMin),
+      MEDIASOUP_RTC_MAX_PORT: String(rtcMax),
+      MEDIASOUP_ANNOUNCED_ADDRESS: '127.0.0.1',
+      WEB_ORIGIN: origin,
+      ...extraEnv,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr?.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  const url = `http://127.0.0.1:${port}`;
+  const deadline = Date.now() + 15000;
+  let ready = false;
+  while (Date.now() < deadline && !ready) {
+    try {
+      const r = await fetch(url + '/live');
+      if (r.status === 200) ready = true;
+    } catch {
+      // not up yet
+    }
+    if (!ready) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!ready) throw new Error(`scratch apps/media instance never became ready; stderr so far: ${stderr}`);
+  return { child, url, wsUrl: `ws://127.0.0.1:${port}`, stderr: () => stderr };
+}
+
+function stopScratchMediaInstance(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  // On win32, startScratchMediaInstance spawns tsx with { shell: true }, so
+  // `child.pid` is cmd.exe's PID, not the real tsx/node process it execs.
+  // `child.kill()` only signals that shell -- confirmed live by this same
+  // task: after a first pass using plain child.kill('SIGKILL'), the scratch
+  // instance's actual node process was still listening and answering
+  // /live minutes later, orphaned, holding its piped stdio open and
+  // hanging this whole test file's process forever (killing cmd.exe alone
+  // doesn't kill its child on Windows, same root cause as the win32 skip
+  // note on the SIGTERM test below). `taskkill /T /F` kills the whole
+  // process tree rooted at that PID instead. On POSIX, plain kill() is
+  // sufficient since there's no shell layer in between.
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+  } else {
+    child.kill('SIGKILL');
+  }
+}
+
+// voice-moderation-occupancy: subscribes directly to the same 'vexa:dispatch'
+// Redis pub/sub channel apps/gateway itself subscribes to (see
+// apps/gateway/src/index.ts's own `redis.duplicate();...subscribe('vexa:dispatch')`)
+// so this test observes a genuinely live publish() call end-to-end through
+// the real dispatch mechanism, rather than mocking or reaching into
+// apps/media's in-memory state.
+type DispatchEvent = { op: number; t: string; channelId: string; d: unknown; s: number };
+function subscribeOccupancy(channelId: string) {
+  const sub = apiRedis.duplicate();
+  const events: DispatchEvent[] = [];
+  const ready = sub.subscribe('vexa:dispatch').then(() => undefined);
+  sub.on('message', (_topic, payload) => {
+    const event = JSON.parse(payload) as DispatchEvent;
+    if (event.t === 'voice.occupancy' && event.channelId === channelId) events.push(event);
+  });
+  async function waitForCount(count: number, timeoutMs = 7000): Promise<DispatchEvent> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const i = events.findIndex((e) => (e.d as { count: number }).count === count);
+      if (i >= 0) return events.splice(i, 1)[0];
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    throw new Error(`Timed out waiting for voice.occupancy count=${count}; seen so far: ${JSON.stringify(events)}`);
+  }
+  async function close() {
+    await ready;
+    await sub.unsubscribe('vexa:dispatch');
+    sub.disconnect();
+  }
+  return { ready, waitForCount, close };
 }
 
 test(
@@ -532,6 +650,207 @@ test(
       assert.equal(finalExitCode, 0);
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  },
+);
+
+test(
+  'a guild owner (MODERATE_MEMBERS via owner bypass) mutes then unmutes a real connected member -- verified against the live mediasoup Producer.paused state, not just ok:true',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const scratch = await startScratchMediaInstance(39104, 41100, 41199, { MEDIA_TEST_DEBUG: '1' });
+    try {
+      const owner = await register();
+      const member = await register();
+      const guild = await createGuild(owner.cookie);
+      const voice = await createChannel(owner.cookie, guild.id, 'voice');
+      await inviteAndJoin(owner.cookie, guild.id, member.cookie);
+
+      const ownerPeer = await connectMedia(owner.cookie, scratch.wsUrl);
+      const memberPeer = await connectMedia(member.cookie, scratch.wsUrl);
+      try {
+        await ownerPeer.req('join', { channelId: voice.id });
+        await memberPeer.req('join', { channelId: voice.id });
+
+        const sendTransport = await memberPeer.req('createTransport', { direction: 'send' });
+        assert.equal(sendTransport.ok, true);
+        const transportId = (sendTransport.data as { transportId: string }).transportId;
+        await memberPeer.req('connectTransport', { transportId, dtlsParameters: fakeDtlsParameters() });
+        const produced = await memberPeer.req('produce', { transportId, kind: 'audio', rtpParameters: opusRtpParameters() });
+        assert.equal(produced.ok, true);
+
+        const stateUrl = `${scratch.url}/__test/producer-paused?channelId=${voice.id}&userId=${member.id}`;
+        const before = (await (await fetch(stateUrl)).json()) as { found: boolean; paused: boolean | null };
+        assert.equal(before.found, true);
+        assert.equal(before.paused, false);
+
+        const muted = await ownerPeer.req('moderatorSetMute', { channelId: voice.id, targetUserId: member.id, muted: true });
+        assert.equal(muted.ok, true);
+        assert.deepEqual(muted.data, {});
+
+        const mutedEvent = await memberPeer.waitEvent('participantMuted');
+        assert.deepEqual(mutedEvent.payload, { userId: member.id, muted: true });
+
+        const afterMute = (await (await fetch(stateUrl)).json()) as { paused: boolean | null };
+        assert.equal(afterMute.paused, true, 'the real mediasoup producer must actually be paused server-side, not just acknowledged');
+
+        const unmuted = await ownerPeer.req('moderatorSetMute', { channelId: voice.id, targetUserId: member.id, muted: false });
+        assert.equal(unmuted.ok, true);
+
+        const unmutedEvent = await memberPeer.waitEvent('participantMuted');
+        assert.deepEqual(unmutedEvent.payload, { userId: member.id, muted: false });
+
+        const afterUnmute = (await (await fetch(stateUrl)).json()) as { paused: boolean | null };
+        assert.equal(afterUnmute.paused, false, 'the real mediasoup producer must actually resume server-side');
+      } finally {
+        ownerPeer.ws.close();
+        memberPeer.ws.close();
+      }
+    } finally {
+      stopScratchMediaInstance(scratch.child);
+    }
+  },
+);
+
+test(
+  'moderatorSetMute is denied 403 without MODERATE_MEMBERS, and 404 for a target not actually connected in that room',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const owner = await register();
+    const member = await register();
+    const stranger = await register();
+    const guild = await createGuild(owner.cookie);
+    const voice = await createChannel(owner.cookie, guild.id, 'voice');
+    await inviteAndJoin(owner.cookie, guild.id, member.cookie);
+
+    const ownerPeer = await connectMedia(owner.cookie);
+    const memberPeer = await connectMedia(member.cookie);
+    try {
+      await ownerPeer.req('join', { channelId: voice.id });
+      await memberPeer.req('join', { channelId: voice.id });
+
+      // member has no role granting MODERATE_MEMBERS and is not the owner.
+      const denied = await memberPeer.req('moderatorSetMute', { channelId: voice.id, targetUserId: owner.id, muted: true });
+      assert.equal(denied.ok, false);
+      assert.equal(denied.error?.code, 403);
+
+      // Owner (permitted) targeting someone who exists as a user but was
+      // never connected to this room's media session -- must not be a
+      // silent no-op, same 404 shape as every other "doesn't exist" case.
+      const unknownTarget = await ownerPeer.req('moderatorSetMute', { channelId: voice.id, targetUserId: stranger.id, muted: true });
+      assert.equal(unknownTarget.ok, false);
+      assert.equal(unknownTarget.error?.code, 404);
+    } finally {
+      ownerPeer.ws.close();
+      memberPeer.ws.close();
+    }
+  },
+);
+
+test(
+  'moderatorDisconnect force-removes a target (removedByModerator then their socket closes, room no longer contains them); denied 403 without MODERATE_MEMBERS',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const owner = await register();
+    const memberA = await register();
+    const memberB = await register();
+    const guild = await createGuild(owner.cookie);
+    const voice = await createChannel(owner.cookie, guild.id, 'voice');
+    await inviteAndJoin(owner.cookie, guild.id, memberA.cookie);
+    await inviteAndJoin(owner.cookie, guild.id, memberB.cookie);
+
+    const ownerPeer = await connectMedia(owner.cookie);
+    const memberAPeer = await connectMedia(memberA.cookie);
+    const memberBPeer = await connectMedia(memberB.cookie);
+    try {
+      await ownerPeer.req('join', { channelId: voice.id });
+      await memberAPeer.req('join', { channelId: voice.id });
+      await memberBPeer.req('join', { channelId: voice.id });
+
+      // memberB has no MODERATE_MEMBERS and cannot disconnect memberA.
+      const denied = await memberBPeer.req('moderatorDisconnect', { channelId: voice.id, targetUserId: memberA.id });
+      assert.equal(denied.ok, false);
+      assert.equal(denied.error?.code, 403);
+
+      const closedCode = new Promise<number>((resolve) => memberAPeer.ws.once('close', (code) => resolve(code)));
+
+      const disconnected = await ownerPeer.req('moderatorDisconnect', { channelId: voice.id, targetUserId: memberA.id });
+      assert.equal(disconnected.ok, true);
+      assert.deepEqual(disconnected.data, {});
+
+      // The target receives removedByModerator BEFORE their socket closes.
+      const removedEvent = await memberAPeer.waitEvent('removedByModerator');
+      assert.deepEqual(removedEvent.payload, {});
+      const code = await Promise.race([
+        closedCode,
+        new Promise<number>((_, reject) => setTimeout(() => reject(new Error('target socket never closed')), 10000)),
+      ]);
+      assert.ok(typeof code === 'number');
+
+      // Everyone else in the room still gets the existing peerLeft broadcast.
+      const leftEvent = await memberBPeer.waitEvent('peerLeft');
+      assert.equal((leftEvent.payload as { userId: string }).userId, memberA.id);
+
+      // The room's registry/peer set no longer contains them: a fresh join
+      // by the same user succeeds as a brand-new entry (not "Already
+      // joined"), which is only possible if teardownPeer fully removed the
+      // old peer from channelRooms.
+      const rejoinPeer = await connectMedia(memberA.cookie);
+      try {
+        const rejoin = await rejoinPeer.req('join', { channelId: voice.id });
+        assert.equal(rejoin.ok, true);
+      } finally {
+        rejoinPeer.ws.close();
+      }
+    } finally {
+      ownerPeer.ws.close();
+      memberAPeer.ws.close();
+      memberBPeer.ws.close();
+    }
+  },
+);
+
+test(
+  'voice.occupancy is published live over the real text-gateway dispatch mechanism, with accurate counts across join, second join, disconnect, and moderator-disconnect',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const owner = await register();
+    const member = await register();
+    const guild = await createGuild(owner.cookie);
+    const voice = await createChannel(owner.cookie, guild.id, 'voice');
+    await inviteAndJoin(owner.cookie, guild.id, member.cookie);
+
+    const occupancy = subscribeOccupancy(voice.id);
+    await occupancy.ready;
+
+    const ownerPeer = await connectMedia(owner.cookie);
+    const memberPeer = await connectMedia(member.cookie);
+    try {
+      const ownerJoin = await ownerPeer.req('join', { channelId: voice.id });
+      assert.equal(ownerJoin.ok, true);
+      await occupancy.waitForCount(1);
+
+      const memberJoin = await memberPeer.req('join', { channelId: voice.id });
+      assert.equal(memberJoin.ok, true);
+      await occupancy.waitForCount(2);
+
+      // Plain disconnect (WS close, the `leave`/close-handler path) drops
+      // the count back to 1.
+      memberPeer.ws.close();
+      await occupancy.waitForCount(1);
+
+      // moderatorDisconnect (self-targeted here, since the owner is the
+      // only remaining peer -- nothing in the contract disallows a
+      // moderator targeting themselves, and this is the simplest way to
+      // exercise this specific teardown path in isolation) drops it to
+      // exactly 0, not a stale non-zero count.
+      const disconnected = await ownerPeer.req('moderatorDisconnect', { channelId: voice.id, targetUserId: owner.id });
+      assert.equal(disconnected.ok, true);
+      await occupancy.waitForCount(0);
+    } finally {
+      ownerPeer.ws.close();
+      memberPeer.ws.close();
+      await occupancy.close();
     }
   },
 );
