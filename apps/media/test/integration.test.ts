@@ -748,6 +748,163 @@ test(
 );
 
 test(
+  'moderatorSetMute is denied 403 when the moderator is not themselves connected to the target room (cross-review fix 1)',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const owner = await register();
+    const member = await register();
+    const guild = await createGuild(owner.cookie);
+    const voiceA = await createChannel(owner.cookie, guild.id, 'voice');
+    const voiceB = await createChannel(owner.cookie, guild.id, 'voice');
+    await inviteAndJoin(owner.cookie, guild.id, member.cookie);
+
+    const ownerPeer = await connectMedia(owner.cookie);
+    const memberPeer = await connectMedia(member.cookie);
+    try {
+      // Owner joins room B, member joins room A -- owner has guild-level
+      // MODERATE_MEMBERS but is not connected to room A at all.
+      const ownerJoinB = await ownerPeer.req('join', { channelId: voiceB.id });
+      assert.equal(ownerJoinB.ok, true);
+      const memberJoinA = await memberPeer.req('join', { channelId: voiceA.id });
+      assert.equal(memberJoinA.ok, true);
+
+      const mutedFromOtherRoom = await ownerPeer.req('moderatorSetMute', {
+        channelId: voiceA.id,
+        targetUserId: member.id,
+        muted: true,
+      });
+      assert.equal(mutedFromOtherRoom.ok, false);
+      assert.equal(mutedFromOtherRoom.error?.code, 403);
+
+      const disconnectFromOtherRoom = await ownerPeer.req('moderatorDisconnect', {
+        channelId: voiceA.id,
+        targetUserId: member.id,
+      });
+      assert.equal(disconnectFromOtherRoom.ok, false);
+      assert.equal(disconnectFromOtherRoom.error?.code, 403);
+
+      // Sanity: the exact same action succeeds once the owner is actually a
+      // member of that room (proves the 403 above was specifically about
+      // room membership, not some other permission gap).
+      const ownerJoinAToo = await connectMedia(owner.cookie);
+      try {
+        const secondJoin = await ownerJoinAToo.req('join', { channelId: voiceA.id });
+        assert.equal(secondJoin.ok, true);
+        const mutedFromSameRoom = await ownerJoinAToo.req('moderatorSetMute', {
+          channelId: voiceA.id,
+          targetUserId: member.id,
+          muted: true,
+        });
+        assert.equal(mutedFromSameRoom.ok, true);
+      } finally {
+        ownerJoinAToo.ws.close();
+      }
+    } finally {
+      ownerPeer.ws.close();
+      memberPeer.ws.close();
+    }
+  },
+);
+
+test(
+  'a moderator mute persists across the target\'s own disconnect/reconnect, and is visible to a late joiner (cross-review fix 4)',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const scratch = await startScratchMediaInstance(39105, 41200, 41299, { MEDIA_TEST_DEBUG: '1' });
+    try {
+      const owner = await register();
+      const member = await register();
+      const guild = await createGuild(owner.cookie);
+      const voice = await createChannel(owner.cookie, guild.id, 'voice');
+      await inviteAndJoin(owner.cookie, guild.id, member.cookie);
+
+      const ownerPeer = await connectMedia(owner.cookie, scratch.wsUrl);
+      let memberPeer = await connectMedia(member.cookie, scratch.wsUrl);
+      try {
+        await ownerPeer.req('join', { channelId: voice.id });
+        await memberPeer.req('join', { channelId: voice.id });
+
+        const muted = await ownerPeer.req('moderatorSetMute', { channelId: voice.id, targetUserId: member.id, muted: true });
+        assert.equal(muted.ok, true);
+
+        // Full teardown, not session resumption -- close the socket outright.
+        const closed = new Promise<void>((resolve) => memberPeer.ws.once('close', () => resolve()));
+        memberPeer.ws.close();
+        await closed;
+
+        // A fresh joiner sees the already-muted member via
+        // mutedParticipants, without any further mute action having fired
+        // while they were connected.
+        const lateJoiner = await register();
+        await inviteAndJoin(owner.cookie, guild.id, lateJoiner.cookie);
+        const lateJoinerPeer = await connectMedia(lateJoiner.cookie, scratch.wsUrl);
+        try {
+          const lateJoin = await lateJoinerPeer.req('join', { channelId: voice.id });
+          assert.equal(lateJoin.ok, true);
+          const lateMuted = (lateJoin.data as { mutedParticipants: string[] }).mutedParticipants;
+          assert.ok(lateMuted.includes(member.id), `expected ${member.id} in mutedParticipants, got ${JSON.stringify(lateMuted)}`);
+        } finally {
+          lateJoinerPeer.ws.close();
+        }
+
+        // The muted member reconnects (new socket, same userId) -- their
+        // rejoin response must also include themselves in mutedParticipants...
+        memberPeer = await connectMedia(member.cookie, scratch.wsUrl);
+        const rejoin = await memberPeer.req('join', { channelId: voice.id });
+        assert.equal(rejoin.ok, true);
+        const rejoinMuted = (rejoin.data as { mutedParticipants: string[] }).mutedParticipants;
+        assert.ok(rejoinMuted.includes(member.id), `expected ${member.id} in mutedParticipants on rejoin, got ${JSON.stringify(rejoinMuted)}`);
+
+        // ...and their brand-new producer must start paused server-side,
+        // proving the mute was re-applied to the live producer, not just
+        // reported in the join response.
+        const sendTransport = await memberPeer.req('createTransport', { direction: 'send' });
+        assert.equal(sendTransport.ok, true);
+        const transportId = (sendTransport.data as { transportId: string }).transportId;
+        await memberPeer.req('connectTransport', { transportId, dtlsParameters: fakeDtlsParameters() });
+        const produced = await memberPeer.req('produce', { transportId, kind: 'audio', rtpParameters: opusRtpParameters() });
+        assert.equal(produced.ok, true);
+
+        const stateUrl = `${scratch.url}/__test/producer-paused?channelId=${voice.id}&userId=${member.id}`;
+        const state = (await (await fetch(stateUrl)).json()) as { found: boolean; paused: boolean | null };
+        assert.equal(state.found, true);
+        assert.equal(state.paused, true, 'a reconnecting moderator-muted user\'s new producer must start paused');
+      } finally {
+        ownerPeer.ws.close();
+        memberPeer.ws.close();
+      }
+    } finally {
+      stopScratchMediaInstance(scratch.child);
+    }
+  },
+);
+
+test(
+  'the /__test/producer-paused debug endpoint still answers loopback requests when MEDIA_TEST_DEBUG=1 (cross-review fix 3 does not break existing loopback access)',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const scratch = await startScratchMediaInstance(39106, 41300, 41399, { MEDIA_TEST_DEBUG: '1' });
+    try {
+      // This test process's own `fetch` to 127.0.0.1 is a genuine loopback
+      // TCP connection (the same kind the fix 4 test above relies on) -- it
+      // must still be answered normally, proving the new loopback guard
+      // doesn't regress the endpoint's intended use. A true non-loopback
+      // request can't be exercised from within this same-host test process
+      // (there is no way to originate a real non-127.0.0.1 socket without a
+      // second host), so the guard's remote-address check itself was
+      // verified by code inspection and by the manual req.socket.remoteAddress
+      // check in src/index.ts.
+      const okResponse = await fetch(`${scratch.url}/__test/producer-paused?channelId=nope&userId=nope`);
+      assert.equal(okResponse.status, 200);
+      const body = (await okResponse.json()) as { found: boolean };
+      assert.equal(body.found, false);
+    } finally {
+      stopScratchMediaInstance(scratch.child);
+    }
+  },
+);
+
+test(
   'moderatorDisconnect force-removes a target (removedByModerator then their socket closes, room no longer contains them); denied 403 without MODERATE_MEMBERS',
   { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
   async () => {

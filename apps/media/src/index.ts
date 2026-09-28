@@ -42,6 +42,15 @@ type ChannelRoom = {
   router: MediasoupTypes.Router;
   registry: Map<string, ProducerRegistryEntry>;
   peers: Set<Peer>;
+  // voice-moderation-occupancy fix (cross-review finding 4): userIds
+  // currently moderator-muted in this room. Same lifecycle as `registry`
+  // above -- created with the room, NOT cleared on an individual peer's
+  // disconnect/reconnect, only implicitly discarded when the whole room is
+  // destroyed (decrementRoom deletes the room once the last peer leaves).
+  // This is what lets a moderator-imposed mute survive a full
+  // teardown-and-rejoin reconnect, and lets a late joiner learn who's
+  // already muted via handleJoin's `mutedParticipants` response field.
+  mutedUserIds: Set<string>;
 };
 const channelRooms = new Map<string, ChannelRoom>();
 // Guards concurrent join requests for the same not-yet-created channel from
@@ -67,7 +76,7 @@ async function getOrCreateRoom(channelId: string): Promise<ChannelRoom> {
         },
       ],
     });
-    const room: ChannelRoom = { router, registry: new Map(), peers: new Set() };
+    const room: ChannelRoom = { router, registry: new Map(), peers: new Set(), mutedUserIds: new Set() };
     channelRooms.set(channelId, room);
     return room;
   })();
@@ -201,7 +210,26 @@ const server = createServer((req, res) => {
   // MEDIA_TEST_DEBUG=1 is explicitly set (never set for the normal
   // docker-compose media service or in production), and even then only
   // reads state, never mutates anything.
+  //
+  // Cross-review fix 3 (defense-in-depth): the env-var gate alone has no
+  // other access control -- if MEDIA_TEST_DEBUG=1 were ever accidentally set
+  // in a real deployment, any HTTP caller could read arbitrary users'
+  // producer/mute state. Also require the request to originate from
+  // loopback (127.0.0.1/::1), matching how the test itself only ever talks
+  // to a locally-spawned scratch instance -- so even an accidental
+  // MEDIA_TEST_DEBUG=1 wouldn't expose this over the network, only from
+  // inside the container/host itself.
   if (process.env.MEDIA_TEST_DEBUG === '1' && req.url?.startsWith('/__test/producer-paused')) {
+    const remoteAddress = req.socket.remoteAddress;
+    // ::ffff:127.0.0.1 is the IPv4-mapped-IPv6 form Node reports for a
+    // loopback connection on a dual-stack socket.
+    const isLoopback =
+      remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1';
+    if (!isLoopback) {
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'Forbidden' }));
+      return;
+    }
     const url = new URL(req.url, 'http://internal');
     const channelId = url.searchParams.get('channelId');
     const userId = url.searchParams.get('userId');
@@ -318,6 +346,10 @@ async function handleJoin(peer: Peer, reqId: string, channelId: string) {
   reply(peer, reqId, {
     rtpCapabilities: audioOnlyRtpCapabilities(room.router.rtpCapabilities),
     existingProducers,
+    // Fix 4 (late joiner): current contents of the room's moderator-mute
+    // set, so a peer that joins mid-call immediately knows who's already
+    // muted without waiting for a future participantMuted broadcast.
+    mutedParticipants: [...room.mutedUserIds],
   });
   // voice-moderation-occupancy: publish the new count once the peer is
   // actually in room.peers, mirroring the same publish() call in
@@ -376,6 +408,18 @@ async function requireModerator(peer: Peer, reqId: string, channelId: string): P
   // Nothing below touches the moderator's own resources, but this mirrors
   // every other awaited-then-reply path in this file.
   if (peer.torndown) return false;
+  // Cross-review fix 1: the guild-level MODERATE_MEMBERS check above proves
+  // permission, but never proves the caller is actually in THIS room. A
+  // moderator connected to a completely different voice channel (or holding
+  // a media WS without having joined any room at all) must not be able to
+  // mute/disconnect people in a room they're not even in -- the brief scopes
+  // moderator actions to "another connected participant in the SAME voice
+  // channel". Same 403 "access denied" phrasing as every other authorization
+  // failure in this file.
+  if (peer.channelId !== channelId) {
+    fail(peer, reqId, 403, 'Channel access denied');
+    return false;
+  }
   return true;
 }
 
@@ -392,6 +436,10 @@ async function handleModeratorSetMute(
     fail(peer, reqId, 404, 'Unknown transport/producer/consumer');
     return;
   }
+  // requireModerator (fix 1) already proved peer.channelId === channelId,
+  // and a peer's channelId is only ever set once its room exists (handleJoin),
+  // so this room is guaranteed to exist here.
+  const room = channelRooms.get(channelId)!;
   // Resource limits elsewhere in this file cap a peer at 1 producer, so
   // there's at most one to act on here.
   const [producer] = target.producers.values();
@@ -400,13 +448,26 @@ async function handleModeratorSetMute(
       if (muted) await producer.pause();
       else await producer.resume();
     } catch (error) {
-      // The target may have disconnected (and their producer closed) while
-      // this pause()/resume() call was in flight against the mediasoup
-      // worker -- nothing to roll back, just skip the now-moot media change
-      // and still tell the room the intended mute state below.
+      // Cross-review fix 2: a genuine pause()/resume() rejection here means
+      // the live media state did NOT change as intended -- broadcasting
+      // participantMuted anyway would tell every client (including the
+      // target) a mute state that doesn't match reality. Fail the request
+      // instead of reporting success. (Note: `!producer` above -- a target
+      // with no producer at all, e.g. muted before they ever started
+      // speaking -- is not this case; that's handled by the `if (producer)`
+      // guard and still succeeds, since there's simply nothing to pause.)
       console.error('Failed to set producer pause state', error instanceof Error ? error.message : 'unknown');
+      fail(peer, reqId, 500, 'Failed to set mute state');
+      return;
     }
   }
+  // Cross-review fix 4: persist the moderator-imposed mute state at the
+  // room level (survives the target's own disconnect/reconnect, unlike the
+  // live producer.paused flag which resets with a brand-new Producer -- see
+  // handleProduce's re-application of this set on reconnect, and handleJoin's
+  // mutedParticipants for late joiners).
+  if (muted) room.mutedUserIds.add(targetUserId);
+  else room.mutedUserIds.delete(targetUserId);
   broadcastToChannel(channelId, { type: 'participantMuted', payload: { userId: targetUserId, muted } });
   reply(peer, reqId, {});
 }
@@ -581,6 +642,31 @@ async function handleProduce(
     transportId,
     producer,
   });
+  // Cross-review fix 4 (reconnect half): the room's moderator-mute set
+  // survives a peer's own disconnect/reconnect (see the ChannelRoom type and
+  // handleModeratorSetMute), but a fresh Producer always starts unpaused --
+  // if this peer was moderator-muted before they reconnected, pause the new
+  // producer immediately, before it's usable, so they come back muted
+  // rather than briefly (or indefinitely, if no further mute action fires)
+  // audible. Best-effort: if pause() itself throws here, log and continue --
+  // the producer was still validly created and the request should still
+  // succeed; there's no client-facing action to fail on their own produce
+  // call for a moderator's earlier mute.
+  if (room.mutedUserIds.has(peer.userId)) {
+    try {
+      await producer.pause();
+    } catch (error) {
+      console.error(
+        'Failed to re-apply moderator mute to reconnected producer',
+        error instanceof Error ? error.message : 'unknown',
+      );
+    }
+    // Finding 1-style re-check: teardownPeer may have run (closing this very
+    // producer via its transport) while the pause() await above was in
+    // flight -- it already handled cleanup/broadcast for that case, so don't
+    // also broadcast newProducer / reply success for a peer that's gone.
+    if (peer.torndown) return;
+  }
   broadcastToChannel(
     peer.channelId,
     { type: 'newProducer', payload: { producerId: producer.id, userId: peer.userId, kind: 'audio' } },
