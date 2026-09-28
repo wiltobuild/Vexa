@@ -107,6 +107,15 @@ export type MediaRequest = z.infer<typeof mediaRequestSchema>;
 export const joinResponseSchema = z.object({
   rtpCapabilities: rtpCapabilitiesSchema,
   existingProducers: z.array(z.object({ producerId: z.string().uuid(), userId: snowflakeSchema, kind: z.literal('audio') })),
+  // voice-moderation-occupancy addition: userIds currently moderator-muted
+  // in this room, room-scoped (like the tier-2 producer registry) and NOT
+  // cleared on an individual peer's disconnect/reconnect -- only implicitly
+  // discarded when the whole room is destroyed (last peer leaves). This is
+  // what lets a moderator-imposed mute survive the device-network-handling
+  // task's full-teardown-and-rejoin reconnect model, and lets a late
+  // joiner see who's already muted without waiting for a future
+  // participantMuted broadcast that already happened before they connected.
+  mutedParticipants: z.array(snowflakeSchema),
 });
 export const createTransportResponseSchema = z.object({
   transportId: z.string().uuid(),
