@@ -1,6 +1,6 @@
-import {describe,expect,it} from 'vitest';
+import {describe,expect,it,vi} from 'vitest';
 import {MediaRequestError,MediaSignaling} from './signaling';
-import {consumeExistingAndSubscribe} from './voiceClient';
+import {consumeExistingAndSubscribe,finishJoinWithMicrophone,nextReconnectDelay,reconnectDelay} from './voiceClient';
 
 class MockSocket extends EventTarget {
  static readonly OPEN=1;
@@ -47,5 +47,19 @@ describe('voice producer discovery',()=>{
   listener({producerId:'live',userId:'2',kind:'audio'});
   await Promise.resolve();
   expect(consumed).toEqual(['existing','live']);unsubscribe();
+ });
+});
+
+describe('device and reconnect resilience',()=>{
+ it('continues as listen-only when microphone acquisition is denied',async()=>{
+  const denied=vi.fn().mockRejectedValue(new DOMException('Denied','NotAllowedError'));
+  const attach=vi.fn(),listenOnly=vi.fn();
+  await expect(finishJoinWithMicrophone(denied,attach,listenOnly)).resolves.toBeUndefined();
+  expect(denied).toHaveBeenCalledWith({audio:true});
+  expect(attach).not.toHaveBeenCalled();expect(listenOnly).toHaveBeenCalledOnce();
+ });
+ it('uses bounded exponential reconnect delays',()=>{
+  expect([0,1,2,3,4,9].map(reconnectDelay)).toEqual([500,1000,2000,4000,8000,8000]);
+  expect([1,2,3,4,5].map(nextReconnectDelay)).toEqual([500,1000,2000,4000,null]);
  });
 });

@@ -6,72 +6,49 @@ type ProducerInfo={producerId:string;userId:string;kind:'audio'};
 type JoinResponse={rtpCapabilities:RtpCapabilities;existingProducers:ProducerInfo[]};
 type TransportResponse={transportId:string;iceParameters:TransportOptions['iceParameters'];iceCandidates:TransportOptions['iceCandidates'];dtlsParameters:TransportOptions['dtlsParameters']};
 type ConsumeResponse={consumerId:string;producerId:string;kind:'audio';rtpParameters:RtpParameters};
-export type VoiceClientEvents={peerJoined:(userId:string)=>void;peerLeft:(userId:string)=>void;remoteAudio:(audio:HTMLAudioElement,userId:string)=>void;remoteAudioRemoved:(consumerId:string)=>void};
+type RestartIceResponse={iceParameters:TransportOptions['iceParameters']};
+export type VoiceState='connected'|'listen-only'|'microphone-disconnected'|'reconnecting'|'server-restarting'|'reconnect-failed';
+export type VoiceClientEvents={peerJoined:(userId:string)=>void;peerLeft:(userId:string)=>void;remoteAudio:(audio:HTMLAudioElement,userId:string)=>void;remoteAudioRemoved:(consumerId:string)=>void;stateChanged?:(state:VoiceState)=>void};
+
+export const MAX_RECONNECT_ATTEMPTS=5;
+export const reconnectDelay=(attempt:number)=>Math.min(500*2**attempt,8000);
+export const nextReconnectDelay=(failedAttempts:number)=>failedAttempts>=MAX_RECONNECT_ATTEMPTS?null:reconnectDelay(failedAttempts-1);
+export async function microphoneOrListenOnly(getUserMedia:typeof navigator.mediaDevices.getUserMedia=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)):Promise<MediaStream|null>{try{return await getUserMedia({audio:true});}catch{return null;}}
+export async function finishJoinWithMicrophone(getUserMedia:typeof navigator.mediaDevices.getUserMedia,attach:(stream:MediaStream)=>Promise<void>,listenOnly:()=>void){const stream=await microphoneOrListenOnly(getUserMedia);if(stream)await attach(stream);else listenOnly();}
 
 // This keeps late-join producers and live producer events on one consume path.
-export async function consumeExistingAndSubscribe(existing:ProducerInfo[],subscribe:(listener:(producer:ProducerInfo)=>void)=>()=>void,consume:(producer:ProducerInfo)=>Promise<void>):Promise<()=>void>{
- const unsubscribe=subscribe(producer=>{void consume(producer);});
- await Promise.all(existing.map(consume));
- return unsubscribe;
-}
+export async function consumeExistingAndSubscribe(existing:ProducerInfo[],subscribe:(listener:(producer:ProducerInfo)=>void)=>()=>void,consume:(producer:ProducerInfo)=>Promise<void>):Promise<()=>void>{const unsubscribe=subscribe(producer=>{void consume(producer);});await Promise.all(existing.map(consume));return unsubscribe;}
 
 export class VoiceClient {
- private sendTransport!:Transport;
- private recvTransport!:Transport;
- private producer:Producer|null=null;
- private stream:MediaStream|null=null;
- private readonly consumers=new Map<string,{consumer:Consumer;audio:HTMLAudioElement;userId:string;producerId:string}>();
- private readonly producerConsumers=new Map<string,string>();
- private unsubscribe=()=>{};
+ private sendTransport!:Transport; private recvTransport!:Transport; private producer:Producer|null=null; private stream:MediaStream|null=null;
+ private signaling!:MediaSignaling; private device!:Device; private intentionalClose=false; private reconnecting=false; private reconnectTimer:ReturnType<typeof setTimeout>|null=null; private unsubscribe=()=>{}; private unsubscribeClose=()=>{}; private readonly consumers=new Map<string,{consumer:Consumer;audio:HTMLAudioElement;userId:string;producerId:string}>(); private readonly producerConsumers=new Map<string,string>();
+ private constructor(private readonly url:string,private readonly channelId:string,private readonly events:VoiceClientEvents){}
 
- private constructor(private readonly signaling:MediaSignaling,private readonly device:Device,private readonly events:VoiceClientEvents){}
-
- static async join(url:string,channelId:string,events:VoiceClientEvents):Promise<VoiceClient>{
-  const signaling=await MediaSignaling.connect(url);
-  try{
-   const joined=await signaling.request<JoinResponse>('join',{channelId});
-   const device=new Device();await device.load({routerRtpCapabilities:joined.rtpCapabilities});
-   const client=new VoiceClient(signaling,device,events);
-   await client.createTransports();
-   client.listenForRoomEvents();
-   client.unsubscribe=await consumeExistingAndSubscribe(joined.existingProducers,listener=>client.subscribeNewProducers(listener),producer=>client.consume(producer));
-   const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-   client.stream=stream;
-   client.producer=await client.sendTransport.produce({track:stream.getAudioTracks()[0]});
-   return client;
-  }catch(error){signaling.close();throw error;}
+ static async join(url:string,channelId:string,events:VoiceClientEvents):Promise<VoiceClient>{const client=new VoiceClient(url,channelId,events);await client.establish();return client;}
+ private setState(state:VoiceState){this.events.stateChanged?.(state);}
+ private async establish(){
+  this.intentionalClose=false;this.signaling=await MediaSignaling.connect(this.url);
+  try {const joined=await this.signaling.request<JoinResponse>('join',{channelId:this.channelId});this.device=new Device();await this.device.load({routerRtpCapabilities:joined.rtpCapabilities});await this.createTransports();this.listenForRoomEvents();this.unsubscribe=await consumeExistingAndSubscribe(joined.existingProducers,l=>this.subscribeNewProducers(l),p=>this.consume(p));this.unsubscribeClose=this.signaling.onClose(()=>{if(!this.intentionalClose)this.startReconnect(false);});await finishJoinWithMicrophone(navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices),stream=>this.attachMicrophone(stream),()=>this.setState('listen-only'));}
+  catch(error){this.signaling.close();throw error;}
  }
-
- private async createTransports(){
-  const send=await this.signaling.request<TransportResponse>('createTransport',{direction:'send'});
-  this.sendTransport=this.device.createSendTransport({id:send.transportId,iceParameters:send.iceParameters,iceCandidates:send.iceCandidates,dtlsParameters:send.dtlsParameters});
-  this.wireTransport(this.sendTransport);
-  this.sendTransport.on('produce',({kind,rtpParameters},callback,errback)=>{void this.signaling.request<{producerId:string}>('produce',{transportId:this.sendTransport.id,kind,rtpParameters}).then(({producerId})=>callback({id:producerId})).catch(errback);});
-  const recv=await this.signaling.request<TransportResponse>('createTransport',{direction:'recv'});
-  this.recvTransport=this.device.createRecvTransport({id:recv.transportId,iceParameters:recv.iceParameters,iceCandidates:recv.iceCandidates,dtlsParameters:recv.dtlsParameters});
-  this.wireTransport(this.recvTransport);
- }
- private wireTransport(transport:Transport){transport.on('connect',({dtlsParameters},callback,errback)=>{void this.signaling.request('connectTransport',{transportId:transport.id,dtlsParameters}).then(()=>callback()).catch(errback);});}
- private listenForRoomEvents(){this.signaling.onEvent(event=>{if(event.type==='peerJoined')this.events.peerJoined(event.payload.userId);if(event.type==='peerLeft'){this.events.peerLeft(event.payload.userId);this.removeConsumersForUser(event.payload.userId);}if(event.type==='producerClosed')this.removeProducer(event.payload.producerId);});}
+ private async createTransports(){const send=await this.signaling.request<TransportResponse>('createTransport',{direction:'send'});this.sendTransport=this.device.createSendTransport({id:send.transportId,iceParameters:send.iceParameters,iceCandidates:send.iceCandidates,dtlsParameters:send.dtlsParameters});this.wireTransport(this.sendTransport);this.sendTransport.on('produce',({kind,rtpParameters},callback,errback)=>{void this.signaling.request<{producerId:string}>('produce',{transportId:this.sendTransport.id,kind,rtpParameters}).then(({producerId})=>callback({id:producerId})).catch(errback);});const recv=await this.signaling.request<TransportResponse>('createTransport',{direction:'recv'});this.recvTransport=this.device.createRecvTransport({id:recv.transportId,iceParameters:recv.iceParameters,iceCandidates:recv.iceCandidates,dtlsParameters:recv.dtlsParameters});this.wireTransport(this.recvTransport);}
+ private wireTransport(transport:Transport){transport.on('connect',({dtlsParameters},callback,errback)=>{void this.signaling.request('connectTransport',{transportId:transport.id,dtlsParameters}).then(()=>callback()).catch(errback);});transport.on('connectionstatechange',state=>{if(state==='disconnected'||state==='failed')void this.restartIce(transport);});}
+ private async restartIce(transport:Transport){try{const {iceParameters}=await this.signaling.request<RestartIceResponse>('restartIce',{transportId:transport.id});await transport.restartIce({iceParameters});}catch{this.startReconnect(false);}}
+ private listenForRoomEvents(){this.signaling.onEvent(event=>{if(event.type==='peerJoined')this.events.peerJoined(event.payload.userId);if(event.type==='peerLeft'){this.events.peerLeft(event.payload.userId);this.removeConsumersForUser(event.payload.userId);}if(event.type==='producerClosed')this.removeProducer(event.payload.producerId);if(event.type==='serverShuttingDown'){this.setState('server-restarting');this.startReconnect(true);}});}
  private subscribeNewProducers(listener:(producer:ProducerInfo)=>void){return this.signaling.onEvent(event=>{if(event.type==='newProducer')listener(event.payload);});}
- private async consume(producer:ProducerInfo){
-  if(this.producerConsumers.has(producer.producerId))return;
-  const data=await this.signaling.request<ConsumeResponse>('consume',{transportId:this.recvTransport.id,producerId:producer.producerId,rtpCapabilities:this.device.rtpCapabilities});
-  const consumer=await this.recvTransport.consume({id:data.consumerId,producerId:data.producerId,kind:data.kind,rtpParameters:data.rtpParameters});
-  const audio=new Audio();audio.autoplay=true;audio.srcObject=new MediaStream([consumer.track]);
-  this.consumers.set(data.consumerId,{consumer,audio,userId:producer.userId,producerId:data.producerId});this.producerConsumers.set(data.producerId,data.consumerId);
-  this.events.remoteAudio(audio,producer.userId);
-  await this.signaling.request('resumeConsumer',{consumerId:data.consumerId});
-  void audio.play().catch(()=>{});
- }
- setMuted(muted:boolean){if(this.producer)this.producer.pause?.();if(!muted)this.producer?.resume?.();}
- setDeafened(deafened:boolean){for(const {audio} of this.consumers.values())audio.muted=deafened;}
- async getInboundAudioStatsForTests(){
-  const stats=await this.recvTransport.getStats();
-  return [...stats.values()].filter(stat=>stat.type==='inbound-rtp'&&stat.kind==='audio').map(stat=>({packetsReceived:stat.packetsReceived??0,bytesReceived:stat.bytesReceived??0}));
- }
- async leave(){this.unsubscribe();try{await this.signaling.request('leave',{});}catch{}this.producer?.close();this.stream?.getTracks().forEach(track=>track.stop());this.stream=null;this.sendTransport?.close();this.recvTransport?.close();for(const id of [...this.consumers.keys()])this.removeConsumer(id);this.signaling.close();}
- private removeConsumersForUser(userId:string){for(const [id,entry] of this.consumers)if(entry.userId===userId)this.removeConsumer(id);}
- private removeProducer(producerId:string){const consumerId=this.producerConsumers.get(producerId);if(consumerId)this.removeConsumer(consumerId);}
- private removeConsumer(consumerId:string){const entry=this.consumers.get(consumerId);if(!entry)return;entry.consumer.close();entry.audio.srcObject=null;this.consumers.delete(consumerId);this.producerConsumers.delete(entry.producerId);this.events.remoteAudioRemoved(consumerId);}
+ private async consume(producer:ProducerInfo){if(this.producerConsumers.has(producer.producerId))return;const data=await this.signaling.request<ConsumeResponse>('consume',{transportId:this.recvTransport.id,producerId:producer.producerId,rtpCapabilities:this.device.rtpCapabilities});const consumer=await this.recvTransport.consume({id:data.consumerId,producerId:data.producerId,kind:data.kind,rtpParameters:data.rtpParameters});const audio=new Audio();audio.autoplay=true;audio.srcObject=new MediaStream([consumer.track]);this.consumers.set(data.consumerId,{consumer,audio,userId:producer.userId,producerId:data.producerId});this.producerConsumers.set(data.producerId,data.consumerId);this.events.remoteAudio(audio,producer.userId);await this.signaling.request('resumeConsumer',{consumerId:data.consumerId});void audio.play().catch(()=>{});}
+ private async attachMicrophone(stream:MediaStream){const track=stream.getAudioTracks()[0];if(!track)throw new Error('No audio track available');this.stream=stream;track.onended=()=>this.microphoneDisconnected();navigator.mediaDevices.ondevicechange=()=>{if(track.readyState==='ended')this.microphoneDisconnected();};this.producer=await this.sendTransport.produce({track});this.setState('connected');}
+ private microphoneDisconnected(){if(!this.stream)return;this.producer?.close();this.producer=null;this.stream.getTracks().forEach(track=>track.stop());this.stream=null;this.setState('microphone-disconnected');}
+ async retryMicrophone(deviceId?:string){if(this.stream)return;const stream=await navigator.mediaDevices.getUserMedia({audio:deviceId?{deviceId:{exact:deviceId}}:true});await this.attachMicrophone(stream);}
+ async switchMicrophone(deviceId:string){const stream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:{exact:deviceId}}});const track=stream.getAudioTracks()[0];if(!track)throw new Error('No audio track available');if(this.producer){await this.producer.replaceTrack({track});this.stream?.getTracks().forEach(old=>{old.onended=null;old.stop();});this.stream=stream;track.onended=()=>this.microphoneDisconnected();this.setState('connected');}else await this.attachMicrophone(stream);}
+ private startReconnect(serverRestarting:boolean){if(this.reconnecting||this.intentionalClose)return;this.reconnecting=true;this.setState(serverRestarting?'server-restarting':'reconnecting');this.intentionalClose=true;this.cleanup(true);let attempt=0;
+  // Per docs/tasks/device-network-handling/plan.md this is a full rejoin, not session resumption: the server tears down peer state on socket disconnect.
+  const retry=async()=>{try{await this.establish();this.reconnecting=false;}catch{attempt++;const delay=nextReconnectDelay(attempt);if(delay===null){this.reconnecting=false;this.setState('reconnect-failed');return;}this.reconnectTimer=setTimeout(()=>void retry(),delay);}};this.reconnectTimer=setTimeout(()=>void retry(),reconnectDelay(0));}
+ async retryConnection(){if(!this.reconnecting){this.intentionalClose=false;this.startReconnect(false);}}
+ setMuted(muted:boolean){if(muted)this.producer?.pause();else this.producer?.resume();} setDeafened(deafened:boolean){for(const {audio} of this.consumers.values())audio.muted=deafened;}
+ async getInboundAudioStatsForTests(){const stats=await this.recvTransport.getStats();return [...stats.values()].filter(stat=>stat.type==='inbound-rtp'&&stat.kind==='audio').map(stat=>({packetsReceived:stat.packetsReceived??0,bytesReceived:stat.bytesReceived??0}));}
+ bestEffortLeave(){this.signaling?.sendBestEffort('leave',{});}
+ private cleanup(stopTracks:boolean){this.unsubscribe();this.unsubscribeClose();this.producer?.close();this.producer=null;if(stopTracks)this.stream?.getTracks().forEach(track=>track.stop());this.stream=null;this.sendTransport?.close();this.recvTransport?.close();for(const id of [...this.consumers.keys()])this.removeConsumer(id);this.signaling?.close();}
+ async leave(){this.intentionalClose=true;if(this.reconnectTimer)clearTimeout(this.reconnectTimer);this.reconnecting=false;try{await this.signaling.request('leave',{});}catch{}this.cleanup(true);}
+ private removeConsumersForUser(userId:string){for(const [id,entry] of this.consumers)if(entry.userId===userId)this.removeConsumer(id);} private removeProducer(producerId:string){const id=this.producerConsumers.get(producerId);if(id)this.removeConsumer(id);} private removeConsumer(id:string){const entry=this.consumers.get(id);if(!entry)return;entry.consumer.close();entry.audio.srcObject=null;this.consumers.delete(id);this.producerConsumers.delete(entry.producerId);this.events.remoteAudioRemoved(id);}
 }

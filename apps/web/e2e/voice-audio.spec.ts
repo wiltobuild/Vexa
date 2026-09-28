@@ -50,12 +50,18 @@ async function inboundAudioStats(page: Page) {
 }
 
 test.describe('voice audio (real backend and native Chromium media)', () => {
-  test('two authenticated browsers exchange fake-device audio over mediasoup', async ({ browser }) => {
+  test('a microphone-denied browser joins listen-only and receives fake-device audio', async ({ browser }) => {
     test.skip(!live, 'set VEXA_INTEGRATION=1 with the API, gateway, media, Postgres and Redis stack running');
     test.skip(live && !(await mediaPortReachable()), 'apps/media (port 3003) is not reachable -- start it with `docker compose up -d media` (see docs/tasks/audio-spike/verification.md)');
     test.setTimeout(90_000);
     const ownerContext = await browser.newContext();
     const guestContext = await browser.newContext();
+    // Keep the owner on Chromium's fake microphone, but simulate a real
+    // permission denial for the listener after the app has loaded.
+    await guestContext.addInitScript(() => {
+      const mediaDevices = navigator.mediaDevices;
+      Object.defineProperty(mediaDevices, 'getUserMedia', { configurable: true, value: () => Promise.reject(new DOMException('Denied', 'NotAllowedError')) });
+    });
     const ownerPage = await ownerContext.newPage();
     const guestPage = await guestContext.newPage();
     const owner = `e2e-voice-owner-${unique()}`;
@@ -95,6 +101,7 @@ test.describe('voice audio (real backend and native Chromium media)', () => {
       await expect(ownerPage.getByRole('button', { name: 'Leave', exact: true })).toBeVisible({ timeout: 20_000 });
       await guestPage.getByRole('button', { name: 'Join voice', exact: true }).click();
       await expect(guestPage.getByRole('button', { name: 'Leave', exact: true })).toBeVisible({ timeout: 20_000 });
+      await expect(guestPage.getByText('Microphone unavailable — you can still listen.', { exact: true })).toBeVisible({ timeout: 20_000 });
       await expect(ownerPage.getByText('CONNECTED — 2', { exact: true })).toBeVisible({ timeout: 20_000 });
       await expect(guestPage.getByText('CONNECTED — 2', { exact: true })).toBeVisible({ timeout: 20_000 });
 
