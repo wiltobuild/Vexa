@@ -96,6 +96,16 @@ function broadcastToChannel(channelId: string, event: MediaEvent, exclude?: Peer
   }
 }
 
+// device-network-handling: unlike broadcastToChannel, this reaches every
+// connected peer across every room -- used only for the one-time
+// serverShuttingDown notice broadcast at the start of graceful shutdown.
+function broadcastToAllPeers(event: MediaEvent) {
+  const payload = JSON.stringify(event);
+  for (const peer of allPeers) {
+    if (peer.ws.readyState === WebSocket.OPEN) peer.ws.send(payload);
+  }
+}
+
 // --- per-connection peer state ----------------------------------------------
 // Tier 1 of "Ownership & resource binding": transports/consumers a peer
 // creates for itself live ONLY in that connection's own maps -- never a
@@ -512,6 +522,34 @@ async function handleResumeConsumer(peer: Peer, reqId: string, consumerId: strin
   reply(peer, reqId, {});
 }
 
+// device-network-handling: tier-1 ownership, same rule as connectTransport/
+// produce -- transportId is resolved ONLY via the requesting peer's own
+// transports map, never a global map. mediasoup's WebRtcTransport#restartIce()
+// (confirmed against the installed mediasoup@3.27.1 types in
+// WebRtcTransportTypes.d.ts) returns `Promise<IceParameters>` directly, not a
+// wrapper object -- candidates/dtlsParameters are unchanged by an ICE restart
+// and are not part of its return value.
+async function handleRestartIce(peer: Peer, reqId: string, transportId: string) {
+  const entry = peer.transports.get(transportId);
+  if (!entry) {
+    fail(peer, reqId, 404, 'Unknown transport/producer/consumer');
+    return;
+  }
+  let iceParameters: MediasoupTypes.IceParameters;
+  try {
+    iceParameters = await entry.transport.restartIce();
+  } catch (error) {
+    fail(peer, reqId, 500, 'Failed to restart ICE');
+    return;
+  }
+  // Finding 1 fix pattern (see handleConnectTransport/handleProduce): the
+  // peer may have been torn down while the restartIce() await was in
+  // flight, in which case the transport is already closed -- don't report
+  // success for it.
+  if (peer.torndown) return;
+  reply(peer, reqId, { iceParameters });
+}
+
 // leave's entire implementation is teardownPeer + an ok reply -- no session
 // re-check (plan.md "Teardown idempotency"): tearing down your own peer is
 // always safe, even with an expired session.
@@ -577,6 +615,9 @@ async function handleMessage(peer: Peer, raw: string) {
     case 'resumeConsumer':
       await handleResumeConsumer(peer, parsed.reqId, parsed.payload.consumerId);
       return;
+    case 'restartIce':
+      await handleRestartIce(peer, parsed.reqId, parsed.payload.transportId);
+      return;
     case 'leave':
       handleLeave(peer, parsed.reqId);
       return;
@@ -599,8 +640,18 @@ function queue(peer: Peer, fn: () => Promise<void>) {
     });
 }
 
+// device-network-handling: set true at the start of shutdown() below so the
+// upgrade handler stops accepting new WS connections immediately, before any
+// of the slower teardown steps (broadcasting, closing peers, closing the
+// worker) even begin.
+let shuttingDown = false;
+
 server.on('upgrade', (req, socket, head) => {
   void (async () => {
+    if (shuttingDown) {
+      socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      return;
+    }
     if (req.headers.origin !== config.webOrigin) {
       socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
       return;
@@ -658,16 +709,49 @@ const sweepTimer = setInterval(() => {
   }
 }, 30000);
 
+// Graceful shutdown (plan.md "Graceful shutdown"): broadcast a warning to
+// every connected peer, stop taking new connections, tear every peer down
+// through the same single teardownPeer path everything else uses (closes
+// their transports/producers/consumers and decrements/destroys routers),
+// close the WS/HTTP servers and the mediasoup worker, and exit. Bounded by
+// SHUTDOWN_GRACE_MS so one client that never disconnects cleanly (or a
+// hung db/redis close) can't keep the process alive indefinitely.
+const SHUTDOWN_GRACE_MS = 2000;
+
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(sweepTimer);
+  // Sent before any peer is torn down so every currently-connected client
+  // gets the notice (and a chance to show a "server restarting" state)
+  // instead of just seeing their socket close unexplained.
+  broadcastToAllPeers({ type: 'serverShuttingDown', payload: {} });
+  for (const peer of [...allPeers]) {
+    teardownPeer(peer);
+    peer.ws.close(1001, 'Restarting');
+  }
+  wss.close();
+  server.close();
+  const forceExit = () => process.exit(0);
+  const graceTimer = setTimeout(forceExit, SHUTDOWN_GRACE_MS);
+  void Promise.all([db.end(), redis.quit()])
+    .catch((error) => {
+      console.error('Error closing db/redis during shutdown', error instanceof Error ? error.message : 'unknown');
+    })
+    .finally(() => {
+      // Worker#close() is synchronous (void), unlike db.end()/redis.quit().
+      try {
+        worker.close();
+      } catch {
+        // already closed -- nothing to do
+      }
+      clearTimeout(graceTimer);
+      forceExit();
+    });
+}
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
-    clearInterval(sweepTimer);
-    for (const peer of allPeers) {
-      teardownPeer(peer);
-      peer.ws.close(1001, 'Restarting');
-    }
-    server.close();
-    void Promise.all([db.end(), redis.quit(), worker.close()]).then(() => process.exit(0));
-  });
+  process.on(signal, shutdown);
 }
 
 server.listen(mediaPort, host, () => console.log('Vexa media service listening'));

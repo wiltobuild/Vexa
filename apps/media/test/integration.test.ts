@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { WebSocket } from 'ws';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Real Postgres/Redis + a live apps/api + apps/media, per apps/gateway's own
 // integration-test convention (see apps/gateway/test/integration.test.ts).
@@ -363,3 +366,172 @@ test('media service exposes separate unauthenticated liveness and dependency rea
     assert.equal(((await response.json()) as { ok: boolean }).ok, true);
   }
 });
+
+test(
+  'restartIce is denied (404) for a transport belonging to another connection, and succeeds with real iceParameters for the requester\'s own transport',
+  { skip: process.env.VEXA_INTEGRATION !== '1', timeout: 30000 },
+  async () => {
+    const owner = await register();
+    const member = await register();
+    const guild = await createGuild(owner.cookie);
+    const voice = await createChannel(owner.cookie, guild.id, 'voice');
+    await inviteAndJoin(owner.cookie, guild.id, member.cookie);
+
+    const ownerPeer = await connectMedia(owner.cookie);
+    const memberPeer = await connectMedia(member.cookie);
+    try {
+      await ownerPeer.req('join', { channelId: voice.id });
+      await memberPeer.req('join', { channelId: voice.id });
+
+      const ownerTransport = await ownerPeer.req('createTransport', { direction: 'send' });
+      assert.equal(ownerTransport.ok, true);
+      const ownerTransportId = (ownerTransport.data as { transportId: string }).transportId;
+
+      // Tier 1 ownership: a peer in the same room can never restartIce for a
+      // transport it didn't create itself, mirroring the existing
+      // connectTransport/produce/resumeConsumer ownership test above.
+      const stolenRestart = await memberPeer.req('restartIce', { transportId: ownerTransportId });
+      assert.equal(stolenRestart.ok, false);
+      assert.equal(stolenRestart.error?.code, 404);
+
+      // The real path, against the live mediasoup worker: the owner
+      // restarting ICE on its own transport gets fresh, usable iceParameters.
+      const restarted = await ownerPeer.req('restartIce', { transportId: ownerTransportId });
+      assert.equal(restarted.ok, true);
+      const iceParameters = (restarted.data as { iceParameters: { usernameFragment: string; password: string } }).iceParameters;
+      assert.equal(typeof iceParameters.usernameFragment, 'string');
+      assert.ok(iceParameters.usernameFragment.length > 0);
+      assert.equal(typeof iceParameters.password, 'string');
+      assert.ok(iceParameters.password.length > 0);
+
+      // An unknown transport id (never created by anyone) gets the same 404.
+      const unknownRestart = await ownerPeer.req('restartIce', { transportId: randomUUID() });
+      assert.equal(unknownRestart.ok, false);
+      assert.equal(unknownRestart.error?.code, 404);
+    } finally {
+      ownerPeer.ws.close();
+      memberPeer.ws.close();
+    }
+  },
+);
+
+// Graceful-shutdown test: the rest of this suite talks to a single
+// already-running apps/media instance (started by docker compose, per this
+// project's integration-test convention -- see the module header). That
+// instance can't be SIGTERM'd without killing every other test in this file
+// along with it. So this test spawns its OWN short-lived apps/media process
+// (real `tsx src/index.ts`, real mediasoup worker, on a scratch port and RTC
+// port range so it can't collide with the shared instance) purely to send it
+// a real SIGTERM and observe the real behavior -- not a mock of shutdown().
+// This is judged more practical than exporting shutdown() for a direct unit
+// test: index.ts is a run-on-import script (top-level `await createWorker`,
+// `server.listen` at the bottom) with no module boundary that would let a
+// test import just the shutdown function without also starting a whole
+// second server as a side effect -- so spawning it as a subprocess and doing
+// exactly that on purpose, deliberately, is the less awkward of the two
+// options, and it also happens to be the closest automated approximation of
+// AC7's real "send SIGTERM to the running process" requirement.
+//
+// Skipped on win32: confirmed by actually running this test on a Windows
+// dev host -- Node's own docs note Windows has no real POSIX signal
+// delivery, so `child.kill('SIGTERM')` there just force-terminates the
+// child (like SIGKILL) without ever invoking the child's own
+// `process.on('SIGTERM', ...)` handler. The child process was left running
+// (orphaned, still listening) with the socket never closing, which is a
+// Windows child_process limitation, not a bug in shutdown() itself. Real,
+// live proof that shutdown() itself is correct: this task manually sent a
+// genuine SIGTERM to the actual running `vexa-media-1` Docker container
+// (Linux, real signals) with a connected client and observed, in order,
+// the `serverShuttingDown` event, a 1001 close, and the container exiting
+// with code 0 -- see this task's report for the exact transcript. On Linux
+// (this suite's CI target and Docker's own OS), `child.kill('SIGTERM')`
+// sends a real signal and this test exercises the same code path faithfully.
+test(
+  'SIGTERM triggers graceful shutdown: connected peers get serverShuttingDown before their socket closes, and the process exits within the grace bound',
+  { skip: process.env.VEXA_INTEGRATION !== '1' || process.platform === 'win32', timeout: 30000 },
+  async () => {
+    const mediaDir = path.resolve(fileURLToPath(import.meta.url), '../..');
+    const scratchPort = 39103;
+    const scratchRtcMin = 41000;
+    const scratchRtcMax = 41099;
+    const scratchUrl = `http://127.0.0.1:${scratchPort}`;
+
+    // Resolve the workspace-local tsx binary directly rather than going
+    // through `pnpm exec`/`npx` -- avoids depending on pnpm being resolvable
+    // on PATH inside a spawned shell (it may only be available via corepack
+    // in some environments), since apps/media already depends on tsx
+    // directly (see package.json's "dev"/"start" scripts).
+    const tsxBin = path.join(mediaDir, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.CMD' : 'tsx');
+    const child = spawn(tsxBin, ['src/index.ts'], {
+      cwd: mediaDir,
+      shell: process.platform === 'win32',
+      env: {
+        ...process.env,
+        HOST: '127.0.0.1',
+        MEDIA_PORT: String(scratchPort),
+        MEDIASOUP_RTC_MIN_PORT: String(scratchRtcMin),
+        MEDIASOUP_RTC_MAX_PORT: String(scratchRtcMax),
+        MEDIASOUP_ANNOUNCED_ADDRESS: '127.0.0.1',
+        WEB_ORIGIN: origin,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    try {
+      // Wait for the scratch instance's own /live to answer, rather than a
+      // fixed sleep -- worker startup time can vary under load.
+      const deadline = Date.now() + 15000;
+      let ready = false;
+      while (Date.now() < deadline && !ready) {
+        try {
+          const r = await fetch(scratchUrl + '/live');
+          if (r.status === 200) ready = true;
+        } catch {
+          // not up yet
+        }
+        if (!ready) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.ok(ready, `scratch apps/media instance never became ready; stderr so far: ${stderr}`);
+
+      const user = await register();
+      const ws = new WebSocket(`ws://127.0.0.1:${scratchPort}`, { headers: { Cookie: user.cookie, Origin: origin } });
+      const events: Array<{ type?: string }> = [];
+      ws.on('message', (data) => events.push(JSON.parse(data.toString())));
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+
+      const closedCode = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
+      const exitCode = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+
+      child.kill('SIGTERM');
+
+      const code = await Promise.race([
+        closedCode,
+        new Promise<number>((_, reject) => setTimeout(() => reject(new Error('socket never closed')), 10000)),
+      ]);
+      assert.equal(code, 1001);
+      assert.ok(
+        events.some((e) => e.type === 'serverShuttingDown'),
+        `expected a serverShuttingDown event before close, got: ${JSON.stringify(events)}`,
+      );
+
+      // Bounded shutdown: the process must actually exit, not hang -- give it
+      // real headroom over the server's own SHUTDOWN_GRACE_MS (2000ms) for
+      // process teardown overhead, but this still proves it terminates
+      // rather than running forever.
+      const finalExitCode = await Promise.race([
+        exitCode,
+        new Promise<number>((_, reject) => setTimeout(() => reject(new Error('process never exited')), 10000)),
+      ]);
+      assert.equal(finalExitCode, 0);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  },
+);
