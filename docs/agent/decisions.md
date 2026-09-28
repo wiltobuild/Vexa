@@ -167,3 +167,25 @@ pass (a test-coverage regression where Track B replaced rather than added
 a test, and a real Playwright exact-text-match failure) beyond the 3 found
 during builder cross-review (1 Track A, 2 Track B).
 **Approved by**: user (standing "go full auto" instruction)
+
+## 2026-09-28 — device-network-handling merged; voice-moderation-occupancy task, full auto
+
+**Context**: `feat/device-network-handling` (PR #17) merged to `main` at
+`4d3af1b` after CI passed. User: "go ahead" to continue with the next
+Phase 6 line item, moderator disconnect/mute controls + room occupancy +
+mute-state reconciliation (participant limits and room isolation were
+already satisfied from the audio-spike task — confirmed by reading the
+code, not re-implemented). Extended the frozen contract with
+`moderatorSetMute`/`moderatorDisconnect`/`participantMuted`/
+`removedByModerator`, then mid-review added `mutedParticipants` to `join`'s
+response after cross-review surfaced that moderator-imposed mute state had
+no persistence across a reconnect or for a late joiner.
+**Decision**: Proceeded end-to-end per the standing "do everything, don't
+stop" instruction; see `docs/tasks/voice-moderation-occupancy/verification.md`
+for full live verification results — 6 real bugs found and fixed via
+cross-review (3 Track A: room-scoping, silent mute failure, an
+unauthenticated debug endpoint; 2 Track B: missing e2e coverage, the
+mute-persistence gap; 1 cross-cutting contract fix), all confirmed live by
+this session's own independent re-verification (19 e2e tests, 14 media +
+7 gateway integration tests, full typecheck/build).
+**Approved by**: user (standing "go full auto" instruction)

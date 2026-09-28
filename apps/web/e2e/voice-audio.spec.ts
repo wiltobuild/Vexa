@@ -49,7 +49,85 @@ async function inboundAudioStats(page: Page) {
   });
 }
 
+async function currentUserId(page: Page) {
+  return page.evaluate(async () => {
+    const response = await fetch('/api/me', { credentials: 'include' });
+    if (!response.ok) throw new Error(`current user lookup failed (${response.status})`);
+    return (await response.json() as { id: string }).id;
+  });
+}
+
 test.describe('voice audio (real backend and native Chromium media)', () => {
+  test('owner moderation locks and removes a member while a non-joined viewer receives occupancy', async ({ browser }) => {
+    test.skip(!live, 'set VEXA_INTEGRATION=1 with the API, gateway, media, Postgres and Redis stack running');
+    test.skip(live && !(await mediaPortReachable()), 'apps/media (port 3003) is not reachable -- start it with `docker compose up -d media` (see docs/tasks/audio-spike/verification.md)');
+    test.setTimeout(90_000);
+    const ownerContext = await browser.newContext();
+    const memberContext = await browser.newContext();
+    const viewerContext = await browser.newContext();
+    const ownerPage = await ownerContext.newPage();
+    const memberPage = await memberContext.newPage();
+    const viewerPage = await viewerContext.newPage();
+    const owner = `e2e-moderator-owner-${unique()}`;
+    const member = `e2e-moderator-member-${unique()}`;
+    const viewer = `e2e-moderator-viewer-${unique()}`;
+
+    try {
+      await connect(ownerPage);
+      await registerAccount(ownerPage, owner);
+      await ownerPage.getByRole('button', { name: 'Create server', exact: true }).click();
+      await ownerPage.getByLabel('SERVER NAME').fill('Voice Moderation E2E Squad');
+      await ownerPage.getByRole('dialog').getByRole('button', { name: 'Create server', exact: true }).click();
+      const voiceChannel = await ownerPage.evaluate(async () => {
+        const guild = await (await fetch('/api/guilds', { credentials: 'include' })).json() as { id: string }[];
+        const response = await fetch(`/api/guilds/${guild[0].id}/channels`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'moderation-voice', type: 'voice' }) });
+        if (!response.ok) throw new Error(`voice channel creation failed (${response.status})`);
+        return response.json() as Promise<{ id: string; name: string }>;
+      });
+      await ownerPage.reload();
+      await connect(ownerPage);
+      await ownerPage.getByRole('button', { name: voiceChannel.name, exact: true }).click();
+      await ownerPage.getByRole('button', { name: 'Invite people', exact: true }).click();
+      const code = new URL(await ownerPage.getByLabel('INVITE LINK').inputValue()).searchParams.get('invite')!;
+      await ownerPage.getByRole('button', { name: 'Close', exact: true }).click();
+
+      for (const [page, username] of [[memberPage, member], [viewerPage, viewer]] as const) {
+        await connect(page);
+        await registerAccount(page, username);
+        await page.getByRole('button', { name: 'Join a server', exact: true }).click();
+        await page.getByLabel('INVITE LINK OR CODE').fill(code);
+        await page.getByRole('button', { name: 'Join server', exact: true }).click();
+        await expect(page.getByRole('button', { name: 'Voice Moderation E2E Squad', exact: true })).toBeVisible();
+      }
+      await memberPage.getByRole('button', { name: voiceChannel.name, exact: true }).click();
+      const memberId = await currentUserId(memberPage);
+
+      await ownerPage.getByRole('button', { name: 'Join voice', exact: true }).click();
+      await expect(ownerPage.getByRole('button', { name: 'Leave', exact: true })).toBeVisible({ timeout: 20_000 });
+      await expect(viewerPage.getByLabel('1 people connected')).toBeVisible({ timeout: 20_000 });
+
+      await memberPage.getByRole('button', { name: 'Join voice', exact: true }).click();
+      await expect(memberPage.getByRole('button', { name: 'Leave', exact: true })).toBeVisible({ timeout: 20_000 });
+      await expect(viewerPage.getByLabel('2 people connected')).toBeVisible({ timeout: 20_000 });
+
+      await ownerPage.getByRole('button', { name: `Mute ${memberId}` }).click();
+      await expect(memberPage.getByRole('button', { name: 'Muted by moderator', exact: true })).toBeDisabled({ timeout: 20_000 });
+
+      await ownerPage.getByRole('button', { name: `Disconnect ${memberId}` }).click();
+      await expect(memberPage.getByText('You were disconnected by a moderator.', { exact: true })).toBeVisible({ timeout: 20_000 });
+      await expect(memberPage.getByRole('button', { name: 'Join voice', exact: true })).toBeVisible();
+      await expect(viewerPage.getByLabel('1 people connected')).toBeVisible({ timeout: 20_000 });
+    } finally {
+      await Promise.allSettled([
+        ownerPage.getByRole('button', { name: 'Leave', exact: true }).click({ timeout: 1_000 }),
+        memberPage.getByRole('button', { name: 'Leave', exact: true }).click({ timeout: 1_000 }),
+      ]);
+      await ownerContext.close();
+      await memberContext.close();
+      await viewerContext.close();
+    }
+  });
+
   test('two authenticated browsers exchange fake-device audio over mediasoup', async ({ browser }) => {
     test.skip(!live, 'set VEXA_INTEGRATION=1 with the API, gateway, media, Postgres and Redis stack running');
     test.skip(live && !(await mediaPortReachable()), 'apps/media (port 3003) is not reachable -- start it with `docker compose up -d media` (see docs/tasks/audio-spike/verification.md)');

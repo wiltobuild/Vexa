@@ -3,7 +3,9 @@ export type MediaEvent=
  | {type:'peerLeft';payload:{userId:string}}
  | {type:'newProducer';payload:{producerId:string;userId:string;kind:'audio'}}
  | {type:'producerClosed';payload:{producerId:string}}
- | {type:'serverShuttingDown';payload:{}};
+ | {type:'serverShuttingDown';payload:{}}
+ | {type:'participantMuted';payload:{userId:string;muted:boolean}}
+ | {type:'removedByModerator';payload:{}};
 
 type MediaResponse={reqId:string;ok:true;data:unknown}|{reqId:string;ok:false;error:{code:number;message:string}};
 type Pending={resolve:(data:unknown)=>void;reject:(error:Error)=>void};
@@ -68,5 +70,5 @@ export class MediaSignaling {
 }
 
 function isMediaEvent(value:Partial<MediaEvent>):value is MediaEvent {
- return value.type==='peerJoined'||value.type==='peerLeft'||value.type==='newProducer'||value.type==='producerClosed'||value.type==='serverShuttingDown';
+ return value.type==='peerJoined'||value.type==='peerLeft'||value.type==='newProducer'||value.type==='producerClosed'||value.type==='serverShuttingDown'||value.type==='participantMuted'||value.type==='removedByModerator';
 }
