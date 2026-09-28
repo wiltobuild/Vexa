@@ -730,23 +730,55 @@ function shutdown() {
     teardownPeer(peer);
     peer.ws.close(1001, 'Restarting');
   }
-  wss.close();
-  server.close();
+
   const forceExit = () => process.exit(0);
   const graceTimer = setTimeout(forceExit, SHUTDOWN_GRACE_MS);
+
+  // Worker#close() is synchronous (void), unlike db.end()/redis.quit(). Run
+  // it up front -- before awaiting db/redis -- so a hung db/redis close
+  // can't skip it on the forced-exit (grace timer) path.
+  try {
+    worker.close();
+  } catch {
+    // already closed -- nothing to do
+  }
+
+  // Only exit normally once the WS/HTTP servers have actually finished
+  // closing (their callbacks fire) *and* db/redis have settled -- not just
+  // as soon as db/redis settle. Racing ahead of wss.close()/server.close()
+  // risked truncating the already-queued serverShuttingDown message / 1001
+  // close frames before they flushed. graceTimer remains the hard ceiling:
+  // if any of these hang, it force-exits regardless.
+  let exited = false;
+  const finishExit = () => {
+    if (exited) return;
+    exited = true;
+    clearTimeout(graceTimer);
+    forceExit();
+  };
+
+  let pendingClose = 2; // wss.close callback + server.close callback
+  let dbRedisSettled = false;
+  const maybeFinishExit = () => {
+    if (pendingClose === 0 && dbRedisSettled) finishExit();
+  };
+
+  wss.close(() => {
+    pendingClose -= 1;
+    maybeFinishExit();
+  });
+  server.close(() => {
+    pendingClose -= 1;
+    maybeFinishExit();
+  });
+
   void Promise.all([db.end(), redis.quit()])
     .catch((error) => {
       console.error('Error closing db/redis during shutdown', error instanceof Error ? error.message : 'unknown');
     })
     .finally(() => {
-      // Worker#close() is synchronous (void), unlike db.end()/redis.quit().
-      try {
-        worker.close();
-      } catch {
-        // already closed -- nothing to do
-      }
-      clearTimeout(graceTimer);
-      forceExit();
+      dbRedisSettled = true;
+      maybeFinishExit();
     });
 }
 
