@@ -1,6 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
 import {MediaRequestError,MediaSignaling} from './signaling';
-import {consumeExistingAndSubscribe,finishJoinWithMicrophone,nextReconnectDelay,reconnectDelay} from './voiceClient';
+import {consumeExistingAndSubscribe,finishJoinWithMicrophone,nextReconnectDelay,reconnectDelay,VoiceClient} from './voiceClient';
 
 class MockSocket extends EventTarget {
  static readonly OPEN=1;
@@ -61,5 +61,24 @@ describe('device and reconnect resilience',()=>{
  it('uses bounded exponential reconnect delays',()=>{
   expect([0,1,2,3,4,9].map(reconnectDelay)).toEqual([500,1000,2000,4000,8000,8000]);
   expect([1,2,3,4,5].map(nextReconnectDelay)).toEqual([500,1000,2000,4000,null]);
+ });
+ it('cleans up when leave wins a reconnect already establishing',async()=>{
+  vi.useFakeTimers();
+  try {
+   let resolveEstablish!:((state:'connected')=>void);const established=new Promise<'connected'>(resolve=>{resolveEstablish=resolve;});
+   const stateChanged=vi.fn();const client=Reflect.construct(VoiceClient,['ws://example.test','channel',{peerJoined:vi.fn(),peerLeft:vi.fn(),remoteAudio:vi.fn(),remoteAudioRemoved:vi.fn(),stateChanged}]) as VoiceClient;
+   const internals=client as unknown as {intentionalClose:boolean;signaling:{request:ReturnType<typeof vi.fn>};establish:ReturnType<typeof vi.fn>;cleanup:ReturnType<typeof vi.fn>;startReconnect:(serverRestarting:boolean)=>void};
+   internals.signaling={request:vi.fn().mockResolvedValue(undefined)};
+   internals.cleanup=vi.fn();
+   internals.establish=vi.fn().mockImplementation(()=>{internals.intentionalClose=false;return established;});
+   internals.startReconnect(false);
+   await vi.advanceTimersByTimeAsync(500);
+   expect(internals.establish).toHaveBeenCalledOnce();
+   await client.leave();
+   resolveEstablish('connected');
+   await Promise.resolve();
+   expect(internals.cleanup).toHaveBeenCalledTimes(3);
+   expect(stateChanged).not.toHaveBeenCalledWith('connected');
+  } finally {vi.useRealTimers();}
  });
 });
