@@ -83,6 +83,12 @@ export const mediaRequestSchema = z.discriminatedUnion('type', [
   z.object({ reqId: z.string().uuid(), type: z.literal('consume'), payload: z.object({ transportId: z.string().uuid(), producerId: z.string().uuid(), rtpCapabilities: rtpCapabilitiesSchema }) }),
   z.object({ reqId: z.string().uuid(), type: z.literal('resumeConsumer'), payload: z.object({ consumerId: z.string().uuid() }) }),
   z.object({ reqId: z.string().uuid(), type: z.literal('leave'), payload: z.object({}) }),
+  // device-network-handling addition: a client whose transport's ICE
+  // connection state goes 'disconnected'/'failed' (e.g. a network change)
+  // requests fresh ICE parameters for that transport rather than tearing
+  // the whole call down. Ownership: resolved via the requesting peer's own
+  // transports map, same tier-1 rule as connectTransport/produce/consume.
+  z.object({ reqId: z.string().uuid(), type: z.literal('restartIce'), payload: z.object({ transportId: z.string().uuid() }) }),
 ]);
 export type MediaRequest = z.infer<typeof mediaRequestSchema>;
 
@@ -109,6 +115,12 @@ export const consumeResponseSchema = z.object({
 });
 export const resumeConsumerResponseSchema = z.object({});
 export const leaveResponseSchema = z.object({});
+// mediasoup's WebRtcTransport#restartIce() returns fresh iceParameters only
+// (candidates/dtlsParameters are unchanged by an ICE restart) -- the client
+// applies these via mediasoup-client's Transport#restartIce({iceParameters}).
+export const restartIceResponseSchema = z.object({
+  iceParameters: z.object({ usernameFragment: z.string(), password: z.string(), iceLite: z.boolean().optional() }),
+});
 
 export const mediaResponseSchema = z.discriminatedUnion('ok', [
   z.object({ reqId: z.string().uuid(), ok: z.literal(true), data: z.unknown() }),
@@ -122,6 +134,11 @@ export const mediaEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('peerLeft'), payload: z.object({ userId: snowflakeSchema }) }),
   z.object({ type: z.literal('newProducer'), payload: z.object({ producerId: z.string().uuid(), userId: snowflakeSchema, kind: z.literal('audio') }) }),
   z.object({ type: z.literal('producerClosed'), payload: z.object({ producerId: z.string().uuid() }) }),
+  // device-network-handling addition: sent to every connected peer once,
+  // before the server begins graceful shutdown (SIGTERM/SIGINT), so clients
+  // can show a clear "server restarting" state and attempt reconnection
+  // instead of seeing an unexplained abrupt close.
+  z.object({ type: z.literal('serverShuttingDown'), payload: z.object({}) }),
 ]);
 export type MediaEvent = z.infer<typeof mediaEventSchema>;
 
